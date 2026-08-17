@@ -135,8 +135,14 @@ EDK2_PLATFORMS_FAN_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/0001-RPi
 EDK2_PLATFORMS_FAN_PATCH_APPLIED=0
 EDK2_PLATFORMS_SD_POWER_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/0002-RPi5-keep-microSD-powered-during-UEFI.patch"
 EDK2_PLATFORMS_SD_POWER_PATCH_APPLIED=0
+EDK2_PLATFORMS_FAN_WINDOWS_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch"
+EDK2_PLATFORMS_FAN_WINDOWS_PATCH_APPLIED=0
 
 restore_edk2_sd_patch() {
+    if [[ "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH_APPLIED}" -eq 1 ]]; then
+        git -C "${WORKSPACE}/edk2-platforms" apply --reverse "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH}"
+        echo "Restored RPi5 Windows fan handoff/mailbox patch"
+    fi
     if [[ "${EDK2_PLATFORMS_SD_POWER_PATCH_APPLIED}" -eq 1 ]]; then
         git -C "${WORKSPACE}/edk2-platforms" apply --reverse "${EDK2_PLATFORMS_SD_POWER_PATCH}"
         echo "Restored RPi5 microSD power patch"
@@ -184,6 +190,18 @@ if [[ "${MODEL}" == "5" ]]; then
         echo "RPi5 microSD UEFI power patch is already applied"
     else
         echo "RPi5 microSD UEFI power patch does not apply" >&2
+        exit 1
+    fi
+
+    if git -C "${WORKSPACE}/edk2-platforms" apply --check "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH}" 2>/dev/null; then
+        git -C "${WORKSPACE}/edk2-platforms" apply "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH}"
+        EDK2_PLATFORMS_FAN_WINDOWS_PATCH_APPLIED=1
+        echo "Applied RPi5 Windows fan safe-handoff and mailbox-routing patch"
+    elif git -C "${WORKSPACE}/edk2-platforms" apply --reverse --check "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH}" 2>/dev/null; then
+        echo "RPi5 Windows fan safe-handoff/mailbox patch is already applied"
+    else
+        echo "RPi5 Windows fan safe-handoff/mailbox patch does not apply" >&2
+        git -C "${WORKSPACE}/edk2-platforms" apply --check --verbose "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH}" >&2 || true
         exit 1
     fi
 fi
