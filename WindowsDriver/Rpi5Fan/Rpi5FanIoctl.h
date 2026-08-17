@@ -3,13 +3,13 @@
  *
  * The driver never exposes a stop/0% command. Manual control is limited to
  * 30-100%, and telemetry failure or over-temperature conditions force 100%.
+ * Include this file after the Windows/WDK headers that define GUID, ULONG,
+ * CTL_CODE, METHOD_BUFFERED, FILE_READ_ACCESS, and FILE_WRITE_ACCESS.
  *
  * SPDX-License-Identifier: BSD-2-Clause-Patent
  */
 
 #pragma once
-
-#include <winioctl.h>
 
 #define RPI5FAN_API_VERSION 1u
 #define RPI5FAN_MINIMUM_PERCENT 30u
