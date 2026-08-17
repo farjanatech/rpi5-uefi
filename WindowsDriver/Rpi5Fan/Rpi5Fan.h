@@ -8,6 +8,7 @@
 
 #include <ntddk.h>
 #include <wdf.h>
+#include "Rpi5FanIoctl.h"
 
 typedef struct _FAN_DEVICE_CONTEXT {
     PUCHAR Clocks;
@@ -24,9 +25,16 @@ typedef struct _FAN_DEVICE_CONTEXT {
     PHYSICAL_ADDRESS MessagePhysical;
     WDFTIMER Timer;
     WDFWAITLOCK Lock;
+    ULONG ControlMode;
+    ULONG ManualPercent;
+    ULONG LastTemperatureMilliCelsius;
+    ULONG ConsecutiveTemperatureFailures;
     UCHAR CurrentPercent;
+    BOOLEAN TemperatureValid;
     BOOLEAN HardwareReady;
     BOOLEAN TimerEnabled;
+    BOOLEAN FailSafeActive;
+    BOOLEAN OverTemperatureOverride;
 } FAN_DEVICE_CONTEXT, *PFAN_DEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(FAN_DEVICE_CONTEXT, FanGetContext)
@@ -38,3 +46,4 @@ EVT_WDF_DEVICE_RELEASE_HARDWARE FanEvtReleaseHardware;
 EVT_WDF_DEVICE_D0_ENTRY FanEvtD0Entry;
 EVT_WDF_DEVICE_D0_EXIT FanEvtD0Exit;
 EVT_WDF_TIMER FanEvtTimer;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL FanEvtIoDeviceControl;
