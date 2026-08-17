@@ -1,7 +1,7 @@
 diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c
 --- a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c
 +++ b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c
-@@ -214,10 +214,13 @@ FanExitBootServices (
+@@ -214,9 +214,11 @@ FanExitBootServices (
    (VOID)Event;
    (VOID)Context;
  
