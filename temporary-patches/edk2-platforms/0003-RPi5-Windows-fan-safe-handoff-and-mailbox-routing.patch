@@ -1,0 +1,52 @@
+diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c
+--- a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c
++++ b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c
+@@ -214,10 +214,13 @@ FanExitBootServices (
+   (VOID)Event;
+   (VOID)Context;
+ 
+-  // UEFI timers do not run after ExitBootServices. Persistent mode leaves the
+-  // last PWM value active; all other modes restore the pre-UEFI RP1 state.
+-  if ((mRp1Bus != NULL) && (mFanMode.Value != FAN_MODE_PERSISTENT)) {
+-    mRp1Bus->RestoreFanState (mRp1Bus);
++  // Windows must always inherit a running fan. Establish the 100% fail-safe
++  // before Boot Services disappear and let the Windows driver reduce speed
++  // only after it has successfully entered D0. If the driver is absent or
++  // fails to start, the RP1 PWM registers retain this programmed state.
++  if (mRp1Bus != NULL) {
++    (VOID)mRp1Bus->SetFanSpeed (mRp1Bus, FAN_FAIL_SAFE_SPEED);
+   }
+ }
+ 
+ diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni
+--- a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni
++++ b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni
+@@ -91,10 +91,10 @@
+ #string STR_FAN_FORM_TITLE                                 #language en-US "Cooling Fan"
+ #string STR_FAN_FORM_HELP                                  #language en-US "Configure the GPIO45 PWM fan used by the official Raspberry Pi 5 Active Cooler and compatible fans."
+ #string STR_FAN_MODE_PROMPT                                #language en-US "Control Mode"
+-#string STR_FAN_MODE_HELP                                  #language en-US "Automatic follows CPU temperature only while UEFI is running. Manual restores the previous hardware state when Windows starts. Manual (Persistent) leaves the selected fixed PWM value active after Windows starts."
++#string STR_FAN_MODE_HELP                                  #language en-US "Automatic and manual settings apply while UEFI is running. Windows always receives a 100% fan fail-safe at ExitBootServices; a healthy Windows driver may then take control of speed."
+ #string STR_FAN_MODE_AUTOMATIC                             #language en-US "Automatic (UEFI only)"
+ #string STR_FAN_MODE_MANUAL                                #language en-US "Manual (UEFI only)"
+-#string STR_FAN_MODE_PERSISTENT                            #language en-US "Manual (Persistent)"
++#string STR_FAN_MODE_PERSISTENT                            #language en-US "Manual (100% Windows handoff)"
+ #string STR_FAN_SPEED_PROMPT                               #language en-US "Manual Speed (%)"
+-#string STR_FAN_SPEED_HELP                                 #language en-US "Set fan PWM from 30 to 100 percent in 5 percent steps. Use 100 percent until a tested Windows fan driver is installed."
+-#string STR_FAN_PERSISTENT_WARNING                         #language en-US "WARNING: The selected speed remains fixed after Windows starts. The safe default is 100%. Selecting a lower value without an operating-system fan driver can cause overheating under load."
++#string STR_FAN_SPEED_HELP                                 #language en-US "Set fan PWM from 30 to 100 percent in 5 percent steps while UEFI is running. Windows handoff is always forced to 100 percent."
++#string STR_FAN_PERSISTENT_WARNING                         #language en-US "Windows handoff is fail-safe: UEFI programs 100% before ExitBootServices. The Windows fan driver may reduce speed only after successful startup."
+ diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
+--- a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
++++ b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
+@@ -106,8 +106,8 @@ Device (FAN0) {
+         0x000000107C0138BF,
+         0x0,
+         0x40,
+-        ,
+-        ,
++        0,
++        "\\_SB.SOCB",
+         )
+     })
+     RP1_QWORDMEMORY_SET (00, RP1_CLOCKS_MAIN_BASE, 0x1000)
