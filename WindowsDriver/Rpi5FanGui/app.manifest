@@ -7,9 +7,4 @@
       </requestedPrivileges>
     </security>
   </trustInfo>
-  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
-    <application>
-      <supportedOS Id="{4f476546-9375-4f35-98b8-292009500123}" />
-    </application>
-  </compatibility>
 </assembly>
