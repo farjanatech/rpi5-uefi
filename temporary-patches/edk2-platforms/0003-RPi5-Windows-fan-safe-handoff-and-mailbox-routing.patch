@@ -17,8 +17,8 @@ diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c b/Pla
 +    (VOID)mRp1Bus->SetFanSpeed (mRp1Bus, FAN_FAIL_SAFE_SPEED);
    }
  }
- 
- diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni
+
+diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni
 --- a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni
 +++ b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni
 @@ -91,10 +91,10 @@
@@ -36,7 +36,8 @@ diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c b/Pla
 -#string STR_FAN_PERSISTENT_WARNING                         #language en-US "WARNING: The selected speed remains fixed after Windows starts. The safe default is 100%. Selecting a lower value without an operating-system fan driver can cause overheating under load."
 +#string STR_FAN_SPEED_HELP                                 #language en-US "Set fan PWM from 30 to 100 percent in 5 percent steps while UEFI is running. Windows handoff is always forced to 100 percent."
 +#string STR_FAN_PERSISTENT_WARNING                         #language en-US "Windows handoff is fail-safe: UEFI programs 100% before ExitBootServices. The Windows fan driver may reduce speed only after successful startup."
- diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
+
+diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
 --- a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
 +++ b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
 @@ -106,8 +106,8 @@ Device (FAN0) {
