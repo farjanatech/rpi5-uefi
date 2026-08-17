@@ -3,7 +3,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $DeviceId = 'ACPI\RPI000F\0'
-$ExpectedDriverVersion = '2026.8.17.3'
+$ExpectedDriverVersion = '2026.8.17.4'
 $ExpectedProvider = 'RPi5 UEFI Community'
 $LogPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'RPi5Fan-install.log'
 $PackageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -78,173 +78,110 @@ function Invoke-PnpDriverInstall {
 
 Start-Transcript -Path $LogPath -Append | Out-Null
 try {
-    Write-Host 'RPi5Fan One Shot Installer v0.1.1 exp.3'
-    Write-Host "Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
-    Write-Host "Computer: $env:COMPUTERNAME"
-    Write-Host "Windows: $([Environment]::OSVersion.VersionString)"
-    Write-Host "Device: $DeviceId"
-    Write-Host "Expected DriverVer: $ExpectedDriverVersion"
-    Write-Host "Package: $PackageDir"
-
+    Write-Step 'Checking administrator privileges'
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Administrator privileges are required.'
+        throw 'This installer must run as Administrator.'
     }
 
-    $required = 'Rpi5Fan.inf','Rpi5Fan.sys','rpi5fan.cat','Rpi5Fan.cer'
-    foreach ($name in $required) {
+    Write-Step 'Checking driver package files'
+    foreach ($name in 'Rpi5Fan.inf','Rpi5Fan.sys','rpi5fan.cat','Rpi5Fan.cer') {
         $path = Join-Path $PackageDir $name
         if (-not (Test-Path -LiteralPath $path)) {
-            throw "Missing package file: $name"
+            throw "Missing driver package file: $path"
         }
     }
-    Write-Host 'OK: Driver files located.'
 
-    $infPath = Join-Path $PackageDir 'Rpi5Fan.inf'
-    $infText = Get-Content -LiteralPath $infPath -Raw
-    if ($infText -notmatch 'ACPI\\RPI000F' -or $infText -notmatch 'NTARM64') {
-        throw 'INF does not advertise the expected ARM64 ACPI\RPI000F match.'
+    Write-Step 'Installing test certificate'
+    $certificate = Join-Path $PackageDir 'Rpi5Fan.cer'
+    Import-Certificate -FilePath $certificate -CertStoreLocation 'Cert:\LocalMachine\Root' | Out-Null
+    Import-Certificate -FilePath $certificate -CertStoreLocation 'Cert:\LocalMachine\TrustedPublisher' | Out-Null
+
+    Write-Step 'Checking Windows test-signing mode'
+    $testSigning = (& bcdedit.exe /enum '{current}' 2>&1 | Out-String)
+    if ($testSigning -notmatch '(?im)^testsigning\s+Yes\s*$') {
+        Write-Host 'Test-signing is not enabled. Enabling it now...'
+        Invoke-NativeAllowed bcdedit.exe @(0) /set testsigning on | Out-Null
+        $RebootRequired = $true
     }
-    if ($infText -notmatch 'DriverVer\s*=\s*08/17/2026\s*,\s*2026\.8\.17\.3') {
-        throw "Unexpected driver version. Expected $ExpectedDriverVersion."
+
+    if ($RebootRequired) {
+        Write-Warning 'Windows must reboot before it can load this test-signed driver.'
+        Write-Host 'Reboot Windows, then run this same installer again.'
+        return
     }
-    Write-Host "OK: INF hardware, architecture, and DriverVer $ExpectedDriverVersion verified."
 
-    $devicePresent = Test-Path 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\ACPI\RPI000F\0'
-    if (-not $devicePresent) {
-        throw 'ACPI\RPI000F\0 is not present. Install/boot the companion fan-enabled RPi5 UEFI first.'
-    }
-    Write-Host 'OK: ACPI\RPI000F detected.'
-
-    Write-Step 'TESTSIGNING check'
-    $bcd = & bcdedit.exe /enum '{current}' 2>&1 | Out-String
-    Write-Host $bcd.TrimEnd()
-    if ($bcd -notmatch '(?im)^testsigning\s+Yes\s*$') {
-        Write-Host 'TESTSIGNING is not enabled. Enabling it now...'
-        [void](Invoke-NativeAllowed bcdedit.exe @(0) /set testsigning on)
-        Write-Warning 'TESTSIGNING was enabled. Reboot Windows, then run this same installer again.'
-        exit 3010
-    }
-    Write-Host 'OK: TESTSIGNING already enabled.'
-
-    Write-Step 'Certificate installation'
-    [void](Invoke-NativeAllowed certutil.exe @(0) -addstore Root (Join-Path $PackageDir 'Rpi5Fan.cer'))
-    [void](Invoke-NativeAllowed certutil.exe @(0) -addstore TrustedPublisher (Join-Path $PackageDir 'Rpi5Fan.cer'))
-
-    Write-Step 'Current selected driver before update'
-    $before = Get-SelectedDriverState
-    $before | Format-List InfPath,Version,Provider
-
-    Write-Step 'Driver installation'
+    Write-Step 'Installing/updating RPi5Fan driver'
     $install = Invoke-PnpDriverInstall
-
-    if ($install.ExitCode -eq 259) {
-        Write-Warning 'PnPUtil returned 259 (no better installation performed). Inspecting the driver Windows actually selected.'
-        $selected = Get-SelectedDriverState
-        $selected | Format-List InfPath,Version,Provider
-
-        if ($selected.Version -eq $ExpectedDriverVersion) {
-            Write-Host 'OK: The expected driver version is already selected. Continuing.'
-        }
-        else {
-            $safeOldPackage = ($selected.Provider -eq $ExpectedProvider) -or (Test-IsRpi5FanInf $selected.InfPath)
-            if (-not $safeOldPackage) {
-                throw "PnPUtil returned 259 and the selected driver is not a recognized RPi5Fan package (INF=$($selected.InfPath), Version=$($selected.Version), Provider=$($selected.Provider))."
-            }
-            if ($selected.InfPath -notmatch '^oem\d+\.inf$') {
-                throw "Recognized stale RPi5Fan driver has an unexpected INF path: $($selected.InfPath)"
-            }
-
-            Write-Step 'Replacing stale RPi5Fan package selected by Windows'
-            Write-Host "Removing stale selected package $($selected.InfPath) version $($selected.Version)."
-            $deleteCode = Invoke-NativeAllowed pnputil.exe @(0,3010,1641) /delete-driver $selected.InfPath /uninstall /force
-            if ($deleteCode -in 3010,1641) { $RebootRequired = $true }
-
-            [void](Invoke-NativeAllowed pnputil.exe @(0) /scan-devices)
-            Start-Sleep -Seconds 1
-
-            Write-Step 'Retry driver installation'
-            $install = Invoke-PnpDriverInstall
-            if ($install.ExitCode -notin 0,259,3010,1641) {
-                throw "pnputil.exe retry failed with exit code $($install.ExitCode)"
-            }
-            if ($install.ExitCode -in 3010,1641) { $RebootRequired = $true }
-
-            if ($install.ExitCode -eq 259) {
-                $afterRetry = Get-SelectedDriverState
-                $afterRetry | Format-List InfPath,Version,Provider
-                if ($afterRetry.Version -ne $ExpectedDriverVersion) {
-                    throw "Windows still did not select DriverVer $ExpectedDriverVersion after stale-package replacement."
-                }
-                Write-Host 'OK: Expected driver selected after stale-package replacement.'
-            }
-        }
-    }
-    elseif ($install.ExitCode -in 3010,1641) {
-        $RebootRequired = $true
-    }
-    elseif ($install.ExitCode -ne 0) {
-        throw "pnputil.exe failed with exit code $($install.ExitCode)"
+    if ($install.ExitCode -notin 0, 259) {
+        throw "PnPUtil failed with exit code $($install.ExitCode)."
     }
 
-    Write-Step 'PnP rescan and restart'
-    [void](Invoke-NativeAllowed pnputil.exe @(0) /scan-devices)
-    & pnputil.exe /restart-device $DeviceId
-    $restartCode = $LASTEXITCODE
-    if ($restartCode -in 3010,1641) {
-        $RebootRequired = $true
-    }
-    elseif ($restartCode -ne 0) {
-        Write-Warning "Device restart returned exit code $restartCode; continuing with status check."
-    }
+    Start-Sleep -Seconds 2
+    & pnputil.exe /scan-devices | Out-Host
     Start-Sleep -Seconds 2
 
-    Write-Step 'Installed driver candidates'
-    & pnputil.exe /enum-devices /instanceid $DeviceId /drivers
+    $state = Get-SelectedDriverState
+    Write-Host "Selected INF:      $($state.InfPath)"
+    Write-Host "Selected version:  $($state.Version)"
+    Write-Host "Selected provider: $($state.Provider)"
 
-    Write-Step 'Selected driver after update'
-    $finalDriver = Get-SelectedDriverState
-    $finalDriver | Format-List InfPath,Version,Provider
+    if ($state.Version -ne $ExpectedDriverVersion -and
+        $state.Provider -eq $ExpectedProvider -and
+        (Test-IsRpi5FanInf $state.InfPath)) {
+        Write-Warning "Windows is still selecting stale RPi5Fan package $($state.InfPath) version $($state.Version)."
+        Write-Step 'Removing selected stale RPi5Fan package'
+        Invoke-NativeAllowed pnputil.exe @(0, 259) /delete-driver $state.InfPath /uninstall /force | Out-Null
+        & pnputil.exe /scan-devices | Out-Host
+        Start-Sleep -Seconds 2
 
-    if ($finalDriver.Version -ne $ExpectedDriverVersion) {
-        throw "Windows selected DriverVer $($finalDriver.Version) instead of expected $ExpectedDriverVersion."
+        Write-Step 'Retrying verified RPi5Fan package installation'
+        $install = Invoke-PnpDriverInstall
+        if ($install.ExitCode -notin 0, 259) {
+            throw "PnPUtil retry failed with exit code $($install.ExitCode)."
+        }
+        & pnputil.exe /scan-devices | Out-Host
+        Start-Sleep -Seconds 2
+        $state = Get-SelectedDriverState
+        Write-Host "Selected INF after retry:      $($state.InfPath)"
+        Write-Host "Selected version after retry:  $($state.Version)"
+        Write-Host "Selected provider after retry: $($state.Provider)"
     }
 
-    Write-Step 'Final device status'
+    if ($state.Version -ne $ExpectedDriverVersion) {
+        throw "Windows selected driver version '$($state.Version)' instead of expected '$ExpectedDriverVersion'."
+    }
+
+    Write-Step 'Checking final PnP device state'
     $device = Get-PnpDevice -InstanceId $DeviceId -ErrorAction SilentlyContinue
     if ($null -eq $device) {
-        throw 'The fan ACPI device disappeared after installation.'
-    }
-    $device | Format-List Status,Class,FriendlyName,InstanceId,Problem
-
-    $problemStatus = Get-PnpDeviceProperty -InstanceId $DeviceId -KeyName 'DEVPKEY_Device_ProblemStatus' -ErrorAction SilentlyContinue
-    if ($problemStatus) {
-        $problemStatus | Format-List KeyName,Type,Data
+        throw "Device $DeviceId was not found. The matching UEFI ACPI fan patch must be installed first."
     }
 
-    if ($device.Status -ne 'OK' -or [string]$device.Problem -ne 'CM_PROB_NONE') {
-        Write-Step 'Automatic SetupAPI diagnostics'
-        $setupLog = 'C:\Windows\INF\setupapi.dev.log'
-        if (Test-Path $setupLog) {
-            Select-String -Path $setupLog -Pattern 'RPI000F','Rpi5Fan' -Context 5,15 |
-                Select-Object -Last 120 |
-                ForEach-Object { $_.ToString() }
+    $problem = Get-PnpDeviceProperty -InstanceId $DeviceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue
+    $problemCode = if ($null -eq $problem) { -1 } else { [int]$problem.Data }
+    Write-Host "Device status: $($device.Status)"
+    Write-Host "Problem code:  $problemCode"
+
+    if ($problemCode -ne 0 -or $device.Status -ne 'OK') {
+        Write-Warning 'The verified exp.4 package is selected, but the device is not healthy yet.'
+        Write-Host 'Collecting SetupAPI diagnostics...'
+        $setupApi = Join-Path $env:windir 'INF\setupapi.dev.log'
+        if (Test-Path -LiteralPath $setupApi) {
+            Select-String -Path $setupApi -Pattern 'RPI000F','Rpi5Fan' -Context 8,16 | Select-Object -Last 20 | Out-Host
         }
-        throw "Driver $ExpectedDriverVersion is selected but device is not healthy: Status=$($device.Status), Problem=$($device.Problem)"
+        throw "RPi5Fan device failed to start (status=$($device.Status), problem=$problemCode)."
     }
 
-    Write-Host "`nSUCCESS: Raspberry Pi 5 Active Cooler driver v0.1.1 ($ExpectedDriverVersion) is installed and running."
-    if ($RebootRequired) {
-        Write-Warning 'Windows reported that a reboot is required to finalize one or more driver operations.'
-    }
-    Write-Host "Log: $LogPath"
+    Write-Step 'Installation successful'
+    Write-Host "Raspberry Pi 5 fan driver $ExpectedDriverVersion is active and Device Manager reports Code 0."
 }
 catch {
-    Write-Host "`nERROR: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Log: $LogPath"
+    Write-Error $_
     exit 1
 }
 finally {
-    try { Stop-Transcript | Out-Null } catch {}
+    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+    Write-Host "Installer log: $LogPath"
 }
