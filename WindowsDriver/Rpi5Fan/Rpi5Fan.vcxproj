@@ -75,9 +75,9 @@
   <ItemGroup>
     <Inf Exclude="@(Inf)" Include="Rpi5Fan.inx">
       <SpecifyDriverVerDirectiveDate>true</SpecifyDriverVerDirectiveDate>
-      <DateStamp>08/17/2026</DateStamp>
+      <DateStamp>08/18/2026</DateStamp>
       <SpecifyDriverDirectiveVersion>true</SpecifyDriverDirectiveVersion>
-      <TimeStamp>2026.8.17.4</TimeStamp>
+      <TimeStamp>2026.8.18.6</TimeStamp>
     </Inf>
     <FilesToPackage Include="$(TargetPath)" Condition="'$(ConfigurationType)'=='Driver'" />
   </ItemGroup>
@@ -85,11 +85,10 @@
     <ClInclude Include="Rpi5Fan.h" />
     <ClInclude Include="Rpi5FanIoctl.h" />
     <ClInclude Include="FanCurve.h" />
+    <ClInclude Include="..\Rpi5Temp\Rpi5TempIoctl.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <PropertyGroup>
-    <VisualStudioVersion>17.0</VisualStudioVersion>
-  </PropertyGroup>
+  <PropertyGroup><VisualStudioVersion>17.0</VisualStudioVersion></PropertyGroup>
   <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.Common.targets"
           Condition="Exists('$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.Common.targets')" />
 </Project>
