@@ -5,6 +5,13 @@ on:
   push:
     branches:
       - fan-persistent-windows-driver-exp4
+  pull_request:
+    branches:
+      - fan-persistent-windows-driver-exp4
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   contents: write
@@ -12,7 +19,7 @@ permissions:
 
 jobs:
   release:
-    if: ${{ contains(github.event.head_commit.message, '[republish-exp4-clean]') }}
+    if: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[republish-exp4-clean]')) || (github.event_name == 'pull_request' && contains(github.event.pull_request.title, '[republish-exp4-pr]')) }}
     runs-on: ubuntu-latest
     steps:
       - name: Download verified driver release bundle
