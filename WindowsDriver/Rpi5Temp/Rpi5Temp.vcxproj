@@ -5,8 +5,8 @@
     <ProjectConfiguration Include="Release|ARM64"><Configuration>Release</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{DC441E68-8624-43C1-A35F-66C70C6D7505}</ProjectGuid>
-    <RootNamespace>Rpi5Fan</RootNamespace>
+    <ProjectGuid>{C707E292-A350-49F8-9F9B-1247BE83C310}</ProjectGuid>
+    <RootNamespace>Rpi5Temp</RootNamespace>
     <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR>
     <Configuration Condition="'$(Configuration)'==''">Debug</Configuration>
     <Platform Condition="'$(Platform)'==''">ARM64</Platform>
@@ -56,7 +56,7 @@
     <OutputPath>$(BaseOutputPath)$(Platform)\$(Configuration)\</OutputPath>
     <OutDir>$(OutputPath)</OutDir>
     <IntDir>$(MSBuildProjectDirectory)\obj\$(Platform)\$(Configuration)\</IntDir>
-    <TargetName>Rpi5Fan</TargetName>
+    <TargetName>Rpi5Temp</TargetName>
   </PropertyGroup>
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" />
@@ -73,7 +73,7 @@
     <PackageReference Include="Microsoft.Windows.SDK.CPP.x64" Version="10.0.26100.1" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Exclude="@(Inf)" Include="Rpi5Fan.inx">
+    <Inf Exclude="@(Inf)" Include="Rpi5Temp.inx">
       <SpecifyDriverVerDirectiveDate>true</SpecifyDriverVerDirectiveDate>
       <DateStamp>08/18/2026</DateStamp>
       <SpecifyDriverDirectiveVersion>true</SpecifyDriverDirectiveVersion>
@@ -82,10 +82,8 @@
     <FilesToPackage Include="$(TargetPath)" Condition="'$(ConfigurationType)'=='Driver'" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Rpi5Fan.h" />
-    <ClInclude Include="Rpi5FanIoctl.h" />
-    <ClInclude Include="FanCurve.h" />
-    <ClInclude Include="..\Rpi5Temp\Rpi5TempIoctl.h" />
+    <ClInclude Include="Rpi5Temp.h" />
+    <ClInclude Include="Rpi5TempIoctl.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <PropertyGroup><VisualStudioVersion>17.0</VisualStudioVersion></PropertyGroup>

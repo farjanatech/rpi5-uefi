@@ -2,16 +2,14 @@
  * Shared control API for the Raspberry Pi 5 Active Cooler driver.
  *
  * The driver never exposes a stop/0% command. Manual control is limited to
- * 30-100%, and telemetry failure or over-temperature conditions force 100%.
- * Include this file after the Windows/WDK headers that define GUID, ULONG,
- * CTL_CODE, METHOD_BUFFERED, FILE_READ_ACCESS, and FILE_WRITE_ACCESS.
+ * 30-100%, and temperature-provider failure or over-temperature conditions
+ * force 100%.
  *
  * SPDX-License-Identifier: BSD-2-Clause-Patent
  */
-
 #pragma once
 
-#define RPI5FAN_API_VERSION 1u
+#define RPI5FAN_API_VERSION 2u
 #define RPI5FAN_MINIMUM_PERCENT 30u
 #define RPI5FAN_MAXIMUM_PERCENT 100u
 
@@ -45,6 +43,9 @@ typedef struct _RPI5FAN_STATUS {
     ULONG ConsecutiveTemperatureFailures;
     ULONG FanRpm;
     ULONG FanRpmValid;
+    ULONG TemperatureProviderReady;
+    ULONG TemperatureProviderApiVersion;
+    ULONG LastTemperatureProviderStatus;
 } RPI5FAN_STATUS, *PRPI5FAN_STATUS;
 
 typedef struct _RPI5FAN_MANUAL_REQUEST {

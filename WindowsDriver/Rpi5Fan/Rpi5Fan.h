@@ -3,12 +3,12 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause-Patent
  */
-
 #pragma once
 
 #include <ntddk.h>
 #include <wdf.h>
 #include "Rpi5FanIoctl.h"
+#include "../Rpi5Temp/Rpi5TempIoctl.h"
 
 typedef struct _FAN_DEVICE_CONTEXT {
     PUCHAR Clocks;
@@ -19,18 +19,17 @@ typedef struct _FAN_DEVICE_CONTEXT {
     ULONG GpioLength;
     PUCHAR Pads;
     ULONG PadsLength;
-    PUCHAR Mailbox;
-    ULONG MailboxLength;
-    PVOID Message;
-    PHYSICAL_ADDRESS MessagePhysical;
     WDFTIMER Timer;
     WDFWAITLOCK Lock;
     ULONG ControlMode;
     ULONG ManualPercent;
     ULONG LastTemperatureMilliCelsius;
     ULONG ConsecutiveTemperatureFailures;
+    ULONG TemperatureProviderApiVersion;
+    NTSTATUS LastTemperatureProviderStatus;
     UCHAR CurrentPercent;
     BOOLEAN TemperatureValid;
+    BOOLEAN TemperatureProviderReady;
     BOOLEAN HardwareReady;
     BOOLEAN TimerEnabled;
     BOOLEAN FailSafeActive;

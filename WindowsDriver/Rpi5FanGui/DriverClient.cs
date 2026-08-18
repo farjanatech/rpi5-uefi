@@ -26,6 +26,9 @@ internal struct DriverStatus
     public uint ConsecutiveTemperatureFailures;
     public uint FanRpm;
     public uint FanRpmValid;
+    public uint TemperatureProviderReady;
+    public uint TemperatureProviderApiVersion;
+    public uint LastTemperatureProviderStatus;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -106,10 +109,10 @@ internal sealed class DriverClient : IDisposable
             }
 
             DriverStatus status = Marshal.PtrToStructure<DriverStatus>(output);
-            if (status.Size < size || status.ApiVersion != 1)
+            if (status.Size < size || status.ApiVersion != 2)
             {
                 throw new InvalidOperationException(
-                    $"Unsupported fan driver API (size={status.Size}, version={status.ApiVersion}).");
+                    $"Unsupported fan driver API (size={status.Size}, version={status.ApiVersion}). Expected exp.6 API v2.");
             }
             return status;
         }
@@ -119,15 +122,11 @@ internal sealed class DriverClient : IDisposable
         }
     }
 
-    public void SetAutomatic()
-    {
+    public void SetAutomatic() =>
         SendNoInput(IoctlSetAuto, "Unable to enable automatic fan control.");
-    }
 
-    public void SetFailSafe100()
-    {
+    public void SetFailSafe100() =>
         SendNoInput(IoctlSetFailSafe, "Unable to force the fan to 100%.");
-    }
 
     public void SetManual(uint percent)
     {
