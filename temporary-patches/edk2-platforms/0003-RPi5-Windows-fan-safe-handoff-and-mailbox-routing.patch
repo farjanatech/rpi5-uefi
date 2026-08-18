@@ -40,7 +40,8 @@ diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.
 diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
 --- a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
 +++ b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
-@@ -1,8 +1,8 @@
+@@ -84,8 +84,8 @@ Device (ETH0) {
+ 
  //
  // Raspberry Pi 5 cooling-fan interface for the experimental Windows ARM64
 -// driver. Resource order is an ABI: clocks, PWM1, GPIO bank 2, pad bank 2,
@@ -50,9 +51,7 @@ diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/Raspber
  //
  Device (FAN0) {
    Name (_HID, "RPI000F")
-   Name (_UID, 0x0)
-@@ -13,20 +13,6 @@
-       RP1_QWORDMEMORY_BUF (00)
+@@ -98,20 +98,6 @@ Device (FAN0) {
        RP1_QWORDMEMORY_BUF (01)
        RP1_QWORDMEMORY_BUF (02)
        RP1_QWORDMEMORY_BUF (03)
@@ -72,3 +71,4 @@ diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/Raspber
 -        )
      })
      RP1_QWORDMEMORY_SET (00, RP1_CLOCKS_MAIN_BASE, 0x1000)
+     RP1_QWORDMEMORY_SET (01, RP1_PWM1_BASE, 0x1000)
