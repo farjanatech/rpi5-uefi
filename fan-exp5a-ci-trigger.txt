@@ -1,3 +1,4 @@
 Temporary same-repository trigger for the pinned exp.5A UEFI validation/build/release workflow.
 
 This file carries no firmware, driver, GUI, installer, or build-content changes.
+Corrected Rp1.asi patch anchoring is now pinned for validation.
