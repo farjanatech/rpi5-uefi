@@ -14,8 +14,8 @@ permissions:
   actions: read
 
 env:
-  EXP5A_SOURCE: d0ba995269be302ea176d3acba307400b46cd9a7
-  EXP5A_RELEASE_TARGET: 8832b53b4736add0cd6ea69294b5c37b4e5005df
+  EXP5A_SOURCE: 7f2670cc0febb3b599c91e50179b710978d800f8
+  EXP5A_RELEASE_TARGET: 075f86002dad34af0e8a8d5ed08f4ec204d39b70
   RPI_FIRMWARE_URL: https://github.com/raspberrypi/firmware/
   DTB_VERSION: 1e403e23baab5673f0494a200f57cd01287d5b1a
 
@@ -131,7 +131,7 @@ jobs:
       - name: Upload exp.5A UEFI artifact
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: RPi5_UEFI_${{ matrix.CONFIGURATION }}_exp5a_d0ba995
+          name: RPi5_UEFI_${{ matrix.CONFIGURATION }}_exp5a_7f2670c
           path: |
             RPI_EFI.fd
             config.txt
@@ -152,7 +152,7 @@ jobs:
       - name: Download verified Release UEFI
         uses: actions/download-artifact@v8.0.1
         with:
-          name: RPi5_UEFI_Release_exp5a_d0ba995
+          name: RPi5_UEFI_Release_exp5a_7f2670c
           path: release-stage/uefi
 
       - name: Verify and package exp.5A test release
