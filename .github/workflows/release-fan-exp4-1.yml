@@ -1,0 +1,186 @@
+name: Republish fan exp.4.1 verified release
+
+on:
+  push:
+    branches:
+      - fan-persistent-windows-driver-exp4
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    if: ${{ contains(github.event.head_commit.message, '[republish-exp4]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download recovered verified driver release bundle
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: RPi5Fan_release_exp4
+          path: release-stage/driver
+          run-id: 32033014574
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download recovered verified Windows ARM64 GUI
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: RPi5Fan_GUI_ARM64_exp4
+          path: release-stage/gui
+          run-id: 32033014574
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download recovered verified matching UEFI Release build
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: RPi5_UEFI_Release_rpi5fan-v0.1.1-exp.4
+          path: release-stage/uefi
+          run-id: 32033014574
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify recovered artifacts before republishing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected_source='62b0cb81c0758c8609c4406dcba7ca4543b85ef2'
+
+          test -f release-stage/driver/Install_RPi5Fan_OneShot.cmd
+          test -f release-stage/driver/RPi5Fan_ARM64_exp4.zip
+          test -f release-stage/driver/SHA256SUMS.txt
+          (
+            cd release-stage/driver
+            sha256sum -c SHA256SUMS.txt
+          )
+
+          rm -rf driver-check
+          mkdir driver-check
+          unzip -q release-stage/driver/RPi5Fan_ARM64_exp4.zip -d driver-check
+          grep -Eq 'DriverVer[[:space:]]*=[[:space:]]*08/17/2026,2026\.8\.17\.4' driver-check/Rpi5Fan.inf
+          file driver-check/Rpi5Fan.sys | grep -qi 'ARM64'
+          test -f driver-check/Rpi5Fan.cat
+          test -f driver-check/Rpi5Fan.cer
+
+          test -f release-stage/gui/Rpi5FanControl.exe
+          file release-stage/gui/Rpi5FanControl.exe | grep -qi 'ARM64'
+
+          test -f release-stage/uefi/RPI_EFI.fd
+          test -f release-stage/uefi/SOURCE_REVISIONS.txt
+          test -f release-stage/uefi/SHA256SUMS
+          grep -Fxq "rpi5-uefi ${expected_source}" release-stage/uefi/SOURCE_REVISIONS.txt
+          (
+            cd release-stage/uefi
+            sha256sum -c SHA256SUMS
+          )
+
+          test "$(stat -c%s release-stage/uefi/RPI_EFI.fd)" -gt 3000000
+          test "$(stat -c%s release-stage/gui/Rpi5FanControl.exe)" -gt 100000
+
+      - name: Package clean exp.4.1 release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+
+          cp release-stage/driver/Install_RPi5Fan_OneShot.cmd release-files/
+          cp release-stage/driver/RPi5Fan_ARM64_exp4.zip release-files/RPi5Fan_ARM64_exp4.1.zip
+
+          (
+            cd release-stage/gui
+            zip -q -r ../../release-files/RPi5FanControl_ARM64_exp4.1.zip .
+          )
+
+          (
+            cd release-stage/uefi
+            zip -q -r ../../release-files/RPi5_UEFI_Release_exp4.1.zip .
+          )
+
+          cat > release-files/PROVENANCE_exp4.1.txt <<'EOF'
+          Source commit: 62b0cb81c0758c8609c4406dcba7ca4543b85ef2
+          Verified GitHub Actions run: 32033014574
+          Driver release artifact: RPi5Fan_release_exp4
+          Driver artifact digest: sha256:9028d0a6e16433fcb904dedc10cafe4023bb0d63d364356a3edc83476724dd23
+          GUI artifact: RPi5Fan_GUI_ARM64_exp4
+          GUI artifact digest: sha256:41bfa6be0893e64700037a59cfd1122fec6345c1d7c38e3405273ea563ea7262
+          UEFI Release artifact: RPi5_UEFI_Release_rpi5fan-v0.1.1-exp.4
+          UEFI artifact digest: sha256:347a38124de074099d11745f2db19967c8f3ef786c763bb24b59126924d866e2
+          DriverVer: 08/17/2026,2026.8.17.4
+          Republish reason: clean re-publication after the August 17, 2026 GitHub outage; no functional source changes from exp.4.
+          EOF
+
+          (
+            cd release-files
+            sha256sum \
+              Install_RPi5Fan_OneShot.cmd \
+              RPi5Fan_ARM64_exp4.1.zip \
+              RPi5FanControl_ARM64_exp4.1.zip \
+              RPi5_UEFI_Release_exp4.1.zip \
+              PROVENANCE_exp4.1.txt \
+              > SHA256SUMS_exp4.1.txt
+          )
+
+          ls -lh release-files
+          cat release-files/SHA256SUMS_exp4.1.txt
+
+      - name: Write exp.4.1 release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Raspberry Pi 5 Active Cooler - experimental 4.1
+
+          This is a **clean republish of experimental 4** after the GitHub outage on August 17, 2026. There are **no functional firmware/driver/GUI changes** from exp.4.
+
+          The package is rebuilt from the recovered, successful GitHub Actions artifacts for run `32033014574`, all tied to source commit `62b0cb81c0758c8609c4406dcba7ca4543b85ef2`.
+
+          ### Verification repeated before this republish
+          - fan curve tests: passed
+          - Windows ARM64 KMDF driver build: passed
+          - INF/package/safety API checks: passed
+          - one-shot installer decode/hash verification: passed
+          - Windows 11 ARM64 GUI build: passed
+          - Raspberry Pi 5 UEFI Debug build: passed
+          - Raspberry Pi 5 UEFI Release build: passed
+          - driver bundle SHA-256 checks: passed again during republish
+          - UEFI internal SHA-256 checks: passed again during republish
+          - driver and GUI PE architecture: confirmed ARM64
+          - UEFI `SOURCE_REVISIONS.txt`: confirmed source commit `62b0cb81...`
+
+          ### exp.4 functionality carried forward unchanged
+          - ACPI mailbox `ResourceSource` test routes BCM2712 mailbox ownership through `SOCB` to address Windows Code 12.
+          - UEFI forces the fan to 100% at ExitBootServices before Windows takes control.
+          - Windows driver version remains `2026.8.17.4`.
+          - Driver exposes Automatic, Manual 30-100%, status telemetry, and Force 100%.
+          - Temperature telemetry failure forces 100%.
+          - Manual mode has an 85 C emergency override to 100%.
+          - Normal D0 exit/hardware release requests 100%.
+          - ARM64 GUI shows SoC temperature, commanded PWM %, mode, safety state and CSV logs.
+          - Actual RPM remains unavailable until tachometer support is implemented.
+
+          ### Assets
+          - `RPi5_UEFI_Release_exp4.1.zip` - matching UEFI firmware.
+          - `Install_RPi5Fan_OneShot.cmd` - one-shot Windows driver installer.
+          - `RPi5Fan_ARM64_exp4.1.zip` - Windows ARM64 driver package.
+          - `RPi5FanControl_ARM64_exp4.1.zip` - self-contained Windows 11 ARM64 GUI.
+          - `SHA256SUMS_exp4.1.txt` - hashes for all payloads and provenance file.
+          - `PROVENANCE_exp4.1.txt` - exact source commit, CI run and recovered artifact digests.
+
+          ### First hardware test
+          Install/boot `RPi5_UEFI_Release_exp4.1.zip` first and confirm the fan is running. Then install the exp.4.1 driver. The first milestone is `ACPI\\RPI000F` showing **Code 0** in Device Manager instead of Code 12. Only after Code 0 should automatic control and GUI controls be exercised.
+
+          ### Safety
+          This remains an experimental physical-validation release. UEFI hands Windows a 100% fan state. The driver has no 0% command and manual control is restricted to 30-100%. Keep the Raspberry Pi supervised during the first hardware test.
+          EOF
+
+      - name: Publish clean exp.4.1 prerelease
+        uses: softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: rpi5fan-v0.1.1-exp.4.1
+          target_commitish: 62b0cb81c0758c8609c4406dcba7ca4543b85ef2
+          name: RPi5 Fan Driver v0.1.1 experimental 4.1
+          body_path: release-notes.md
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+          make_latest: false
+          files: release-files/*
+          fail_on_unmatched_files: true
