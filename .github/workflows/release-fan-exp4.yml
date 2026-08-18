@@ -1,3 +1,4 @@
+# Workflow-clean release target verified against master: no .github/workflows differences.
 name: Republish fan exp.4.1 verified release
 
 on:
