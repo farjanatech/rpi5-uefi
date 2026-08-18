@@ -45,9 +45,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          grep -Fxq "functional_commit=${FUNCTIONAL_COMMIT}" recovered-combo/PROVENANCE_exp6.txt
-          grep -Fxq "driver_version=${DRIVER_VERSION}" recovered-combo/PROVENANCE_exp6.txt
-          expected="$(awk '$2 == "RPi5FanControl_ARM64_exp6.zip" {print $1}' recovered-combo/SHA256SUMS_exp6.txt)"
+          tr -d '\r' < recovered-combo/PROVENANCE_exp6.txt > recovered-combo/PROVENANCE_exp6.normalized.txt
+          tr -d '\r' < recovered-combo/SHA256SUMS_exp6.txt > recovered-combo/SHA256SUMS_exp6.normalized.txt
+          grep -Fxq "functional_commit=${FUNCTIONAL_COMMIT}" recovered-combo/PROVENANCE_exp6.normalized.txt
+          grep -Fxq "driver_version=${DRIVER_VERSION}" recovered-combo/PROVENANCE_exp6.normalized.txt
+          expected="$(awk '$2 == "RPi5FanControl_ARM64_exp6.zip" {print $1}' recovered-combo/SHA256SUMS_exp6.normalized.txt)"
           actual="$(sha256sum recovered-combo/RPi5FanControl_ARM64_exp6.zip | awk '{print $1}')"
           test -n "${expected}"
           test "${expected}" = "${actual}"
@@ -85,7 +87,7 @@ jobs:
           rm -rf release-files/driver-stage
 
           cp recovered-combo/RPi5FanControl_ARM64_exp6.zip release-files/
-          cp recovered-combo/PROVENANCE_exp6.txt release-files/
+          cp recovered-combo/PROVENANCE_exp6.normalized.txt release-files/PROVENANCE_exp6.txt
 
           # exp.6 intentionally keeps the physically validated exp.5B ACPI/UEFI
           # layout byte-for-byte. Re-ship that exact UEFI asset for convenience.
