@@ -113,7 +113,7 @@ jobs:
         run: |
           set -euxo pipefail
           git submodule sync --recursive
-          git submodule update --init --depth 1 --jobs 4 \
+          git submodule update --init --recursive --depth 1 --jobs 4 \
             arm-trusted-firmware edk2 edk2-platforms edk2-non-osi
           for module in arm-trusted-firmware edk2 edk2-platforms edk2-non-osi; do
             git -C "${module}" rev-parse HEAD
