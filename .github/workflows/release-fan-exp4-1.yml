@@ -1,3 +1,4 @@
+# Clean exp.4.1 republish trigger after the August 17, 2026 GitHub outage.
 name: Republish fan exp.4.1 verified release
 
 on:
