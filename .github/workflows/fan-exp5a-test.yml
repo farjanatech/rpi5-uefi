@@ -1,0 +1,243 @@
+name: Fan exp.5A four-resource isolation
+
+on:
+  pull_request:
+    branches:
+      - fan-persistent-windows-driver-exp5a
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  EXP5A_SOURCE: d0ba995269be302ea176d3acba307400b46cd9a7
+  EXP5A_RELEASE_TARGET: 8832b53b4736add0cd6ea69294b5c37b4e5005df
+  RPI_FIRMWARE_URL: https://github.com/raspberrypi/firmware/
+  DTB_VERSION: 1e403e23baab5673f0494a200f57cd01287d5b1a
+
+jobs:
+  validate-acpi-isolation:
+    if: ${{ contains(github.event.pull_request.title, '[fan-exp5a-test]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pinned exp.5A functional source
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.EXP5A_SOURCE }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply fan patches and verify final FAN0 resource contract
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          patch1='temporary-patches/edk2-platforms/0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch'
+          patch2='temporary-patches/edk2-platforms/0002-RPi5-keep-microSD-powered-during-UEFI.patch'
+          patch3='temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch'
+
+          git -C edk2-platforms apply --ignore-space-change --check "../${patch1}"
+          git -C edk2-platforms apply --ignore-space-change "../${patch1}"
+          git -C edk2-platforms apply --check "../${patch2}"
+          git -C edk2-platforms apply "../${patch2}"
+          git -C edk2-platforms apply --check "../${patch3}"
+          git -C edk2-platforms apply "../${patch3}"
+
+          rp1='edk2-platforms/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi'
+          fanctl='edk2-platforms/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/FanControl.c'
+
+          awk '/Device \(FAN0\)/ {capture=1; count=0} capture {print; count++} capture && count >= 70 {exit}' "${rp1}" > /tmp/fan0.txt
+          cat /tmp/fan0.txt
+
+          test "$(grep -c 'RP1_QWORDMEMORY_BUF' /tmp/fan0.txt)" -eq 4
+          grep -Fq 'RP1_QWORDMEMORY_SET (00, RP1_CLOCKS_MAIN_BASE, 0x1000)' /tmp/fan0.txt
+          grep -Fq 'RP1_QWORDMEMORY_SET (01, RP1_PWM1_BASE, 0x1000)' /tmp/fan0.txt
+          grep -Fq 'RP1_QWORDMEMORY_SET (02, RP1_IO_BANK2_BASE, 0x1000)' /tmp/fan0.txt
+          grep -Fq 'RP1_QWORDMEMORY_SET (03, RP1_PADS_BANK2_BASE, 0x1000)' /tmp/fan0.txt
+          if grep -Fq '107C013880' /tmp/fan0.txt; then
+            echo 'BCM2712 property mailbox is still present in FAN0.' >&2
+            exit 1
+          fi
+          if grep -Fq '\_SB.SOCB' /tmp/fan0.txt; then
+            echo 'SOCB ResourceSource is still present in FAN0.' >&2
+            exit 1
+          fi
+          grep -Fq '(VOID)mRp1Bus->SetFanSpeed (mRp1Bus, FAN_FAIL_SAFE_SPEED);' "${fanctl}"
+
+          echo 'exp.5A static ACPI contract verified: four RP1 resources only; 100% Windows handoff retained.'
+
+  build-uefi:
+    if: ${{ contains(github.event.pull_request.title, '[fan-exp5a-test]') }}
+    needs: validate-acpi-isolation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        CONFIGURATION: [Debug, Release]
+    steps:
+      - name: Checkout pinned exp.5A functional source
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.EXP5A_SOURCE }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          sudo apt-get update && \
+          sudo apt-get install -y \
+            acpica-tools \
+            binutils-aarch64-linux-gnu \
+            build-essential \
+            device-tree-compiler \
+            gettext \
+            git \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            python3 \
+            python3-pyelftools \
+            uuid-dev
+
+      - name: Build pinned Raspberry Pi 5 UEFI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export EDK2_BUILD_FLAGS="--pcd gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVendor=L${{ github.repository_owner }}"
+          ./build.sh \
+            --model 5 \
+            --debug ${{ matrix.CONFIGURATION == 'Debug' && 1 || 0 }} \
+            --edk2-flags "${EDK2_BUILD_FLAGS}"
+
+      - name: Add Raspberry Pi support file and provenance
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -O -L "${RPI_FIRMWARE_URL}/raw/${DTB_VERSION}/boot/bcm2712-rpi-5-b.dtb"
+          {
+            printf 'rpi5-uefi %s\n' "$(git rev-parse HEAD)"
+            for module in arm-trusted-firmware edk2 edk2-non-osi edk2-platforms; do
+              printf '%s %s\n' "${module}" "$(git -C "${module}" rev-parse HEAD)"
+            done
+          } > SOURCE_REVISIONS.txt
+          grep -Fxq "rpi5-uefi ${EXP5A_SOURCE}" SOURCE_REVISIONS.txt
+          sha256sum RPI_EFI.fd config.txt *.dtb > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Upload exp.5A UEFI artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: RPi5_UEFI_${{ matrix.CONFIGURATION }}_exp5a_d0ba995
+          path: |
+            RPI_EFI.fd
+            config.txt
+            *.dtb
+            SOURCE_REVISIONS.txt
+            SHA256SUMS
+            THIRD_PARTY_NOTICES.md
+            LICENSES/Soulveig-BSD-2-Clause-Patent.txt
+          if-no-files-found: error
+
+  publish-exp5a:
+    if: ${{ contains(github.event.pull_request.title, '[fan-exp5a-test]') }}
+    needs:
+      - validate-acpi-isolation
+      - build-uefi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified Release UEFI
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: RPi5_UEFI_Release_exp5a_d0ba995
+          path: release-stage/uefi
+
+      - name: Verify and package exp.5A test release
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -f release-stage/uefi/RPI_EFI.fd
+          test -f release-stage/uefi/SOURCE_REVISIONS.txt
+          test -f release-stage/uefi/SHA256SUMS
+          grep -Fxq "rpi5-uefi ${EXP5A_SOURCE}" release-stage/uefi/SOURCE_REVISIONS.txt
+          (cd release-stage/uefi && sha256sum -c SHA256SUMS)
+
+          mkdir -p release-files
+          (cd release-stage/uefi && zip -q -r ../../release-files/RPi5_UEFI_Release_exp5a.zip .)
+
+          cat > release-files/TEST_EXP5A_FIRST.txt <<'EOF'
+          Raspberry Pi 5 fan exp.5A is a UEFI-only ACPI isolation test.
+
+          DO NOT install the exp.4/exp.4.1 fan driver for the first boot test.
+          Remove previously installed RPi5Fan driver packages before testing so
+          Windows cannot auto-start an older five-resource driver if Code 12 is fixed.
+
+          After booting this UEFI, verify that ACPI\RPI000F\0 has exactly four resources:
+            0x0000001F00018000-0x0000001F00018FFF
+            0x0000001F0009C000-0x0000001F0009CFFF
+            0x0000001F000D8000-0x0000001F000D8FFF
+            0x0000001F000F8000-0x0000001F000F8FFF
+
+          The BCM2712 mailbox range 0x000000107C013880-0x000000107C0138BF
+          must NOT appear on FAN0.
+
+          Ideal first result: Code 28 (no driver installed), not Code 12.
+          The physical fan should remain running from the UEFI 100% handoff.
+          EOF
+
+          cat > release-files/PROVENANCE_exp5a.txt <<EOF
+          Functional source commit: ${EXP5A_SOURCE}
+          Workflow-clean release tag target: ${EXP5A_RELEASE_TARGET}
+          exp.5A purpose: remove the BCM2712 mailbox from FAN0 and expose only four RP1 resources.
+          UEFI Windows handoff: forced 100% fan retained from exp.4.
+          Windows fan driver: intentionally NOT part of this release.
+          EOF
+
+          (cd release-files && sha256sum \
+            RPi5_UEFI_Release_exp5a.zip \
+            TEST_EXP5A_FIRST.txt \
+            PROVENANCE_exp5a.txt \
+            > SHA256SUMS_exp5a.txt)
+
+      - name: Write exp.5A release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Raspberry Pi 5 Active Cooler - experimental 5A
+
+          **UEFI-only ACPI isolation test. Do not install a new Windows fan driver yet.**
+
+          exp.4.1 hardware testing confirmed that `ACPI\\RPI000F\\0` still reported Code 12 / `STATUS_CONFLICTING_ADDRESSES` while Windows assigned five memory resources, including the BCM2712 property-mailbox range `0x107C013880-0x107C0138BF`.
+
+          exp.5A removes that mailbox descriptor from `FAN0` completely. `FAN0` now exposes only the four RP1 fan-control resources: clocks, PWM1, GPIO bank 2, and pads bank 2. The UEFI 100% fan handoff at ExitBootServices is retained unchanged.
+
+          ### Test objective
+          Before booting exp.5A, remove old RPi5Fan Windows driver packages. Boot this UEFI with no fan driver installed. The ideal first result is **Code 28** (driver missing) rather than Code 12. `pnputil /enum-devices /instanceid "ACPI\\RPI000F\\0" /resources` should report exactly four RP1 memory ranges and no `0x107C013880` mailbox range.
+
+          The physical fan should continue running from the UEFI 100% fail-safe handoff.
+
+          ### Assets
+          - `RPi5_UEFI_Release_exp5a.zip` - Release UEFI from pinned functional source.
+          - `TEST_EXP5A_FIRST.txt` - first-boot test protocol.
+          - `SHA256SUMS_exp5a.txt` - release payload hashes.
+          - `PROVENANCE_exp5a.txt` - exact source and release-target commits.
+
+          Temperature-provider and Windows driver redesign are intentionally deferred until this four-resource FAN0 test resolves whether the mailbox caused the PnP allocation failure.
+          EOF
+
+      - name: Publish exp.5A prerelease
+        uses: softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: rpi5fan-v0.1.1-exp.5a
+          target_commitish: ${{ env.EXP5A_RELEASE_TARGET }}
+          name: RPi5 Fan Driver v0.1.1 experimental 5A (UEFI isolation test)
+          body_path: release-notes.md
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+          make_latest: false
+          files: release-files/*
+          fail_on_unmatched_files: true
