@@ -1,0 +1,3 @@
+Temporary same-repository trigger for the pinned exp.5B UEFI validation/build/release workflow.
+
+This file carries no firmware, driver, GUI, installer, or build-content changes.
