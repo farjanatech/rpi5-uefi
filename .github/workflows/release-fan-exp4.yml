@@ -1,4 +1,4 @@
-name: Publish fan exp.4 verified release
+name: Republish fan exp.4.1 verified release
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release:
-    if: ${{ contains(github.event.head_commit.message, '[release-fan]') }}
+    if: ${{ contains(github.event.head_commit.message, '[republish-exp4-existing]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Download verified driver release bundle
@@ -33,83 +33,117 @@ jobs:
       - name: Download verified matching UEFI Release build
         uses: actions/download-artifact@v8.0.1
         with:
-          pattern: RPi5_UEFI_Release_*
+          name: RPi5_UEFI_Release_rpi5fan-v0.1.1-exp.4
           path: release-stage/uefi
-          merge-multiple: true
           run-id: 32033014574
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Package verified release assets
+      - name: Verify recovered artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_source='62b0cb81c0758c8609c4406dcba7ca4543b85ef2'
+
+          test -f release-stage/driver/Install_RPi5Fan_OneShot.cmd
+          test -f release-stage/driver/RPi5Fan_ARM64_exp4.zip
+          test -f release-stage/driver/SHA256SUMS.txt
+          (cd release-stage/driver && sha256sum -c SHA256SUMS.txt)
+
+          mkdir -p driver-check
+          unzip -q release-stage/driver/RPi5Fan_ARM64_exp4.zip -d driver-check
+          grep -Eq 'DriverVer[[:space:]]*=[[:space:]]*08/17/2026,2026\.8\.17\.4' driver-check/Rpi5Fan.inf
+          file driver-check/Rpi5Fan.sys | grep -qi 'ARM64'
+          test -f driver-check/Rpi5Fan.cat
+          test -f driver-check/Rpi5Fan.cer
+
+          test -f release-stage/gui/Rpi5FanControl.exe
+          file release-stage/gui/Rpi5FanControl.exe | grep -qi 'ARM64'
+
+          test -f release-stage/uefi/RPI_EFI.fd
+          test -f release-stage/uefi/SOURCE_REVISIONS.txt
+          test -f release-stage/uefi/SHA256SUMS
+          grep -Fxq "rpi5-uefi ${expected_source}" release-stage/uefi/SOURCE_REVISIONS.txt
+          (cd release-stage/uefi && sha256sum -c SHA256SUMS)
+
+      - name: Package exp.4.1 assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-files
-
           cp release-stage/driver/Install_RPi5Fan_OneShot.cmd release-files/
-          cp release-stage/driver/RPi5Fan_ARM64_exp4.zip release-files/
+          cp release-stage/driver/RPi5Fan_ARM64_exp4.zip release-files/RPi5Fan_ARM64_exp4.1.zip
+          (cd release-stage/gui && zip -q -r ../../release-files/RPi5FanControl_ARM64_exp4.1.zip .)
+          (cd release-stage/uefi && zip -q -r ../../release-files/RPi5_UEFI_Release_exp4.1.zip .)
 
-          (
-            cd release-stage/gui
-            zip -q -r ../../release-files/RPi5FanControl_ARM64_exp4.zip .
-          )
+          cat > release-files/PROVENANCE_exp4.1.txt <<'EOF'
+          Source commit: 62b0cb81c0758c8609c4406dcba7ca4543b85ef2
+          Verified GitHub Actions run: 32033014574
+          Driver release artifact digest: sha256:9028d0a6e16433fcb904dedc10cafe4023bb0d63d364356a3edc83476724dd23
+          GUI artifact digest: sha256:41bfa6be0893e64700037a59cfd1122fec6345c1d7c38e3405273ea563ea7262
+          UEFI Release artifact digest: sha256:347a38124de074099d11745f2db19967c8f3ef786c763bb24b59126924d866e2
+          DriverVer: 08/17/2026,2026.8.17.4
+          Republish reason: clean republication after the August 17, 2026 GitHub outage. No functional source changes from exp.4.
+          EOF
 
-          (
-            cd release-stage/uefi
-            zip -q -r ../../release-files/RPi5_UEFI_Release_exp4.zip .
-          )
-
-          (
-            cd release-files
-            sha256sum \
-              Install_RPi5Fan_OneShot.cmd \
-              RPi5Fan_ARM64_exp4.zip \
-              RPi5FanControl_ARM64_exp4.zip \
-              RPi5_UEFI_Release_exp4.zip \
-              > SHA256SUMS_exp4.txt
-          )
-
-          ls -lh release-files
-          cat release-files/SHA256SUMS_exp4.txt
+          (cd release-files && sha256sum \
+            Install_RPi5Fan_OneShot.cmd \
+            RPi5Fan_ARM64_exp4.1.zip \
+            RPi5FanControl_ARM64_exp4.1.zip \
+            RPi5_UEFI_Release_exp4.1.zip \
+            PROVENANCE_exp4.1.txt \
+            > SHA256SUMS_exp4.1.txt)
 
       - name: Write release notes
         shell: bash
         run: |
           cat > release-notes.md <<'EOF'
-          ## Raspberry Pi 5 Active Cooler Windows driver - experimental 4
+          ## Raspberry Pi 5 Active Cooler - experimental 4.1
 
-          This prerelease is the matched **UEFI + Windows ARM64 driver + Windows ARM64 GUI** bundle built and validated by successful GitHub Actions run `32033014574` from source commit `62b0cb81c0758c8609c4406dcba7ca4543b85ef2`.
+          Clean republish of experimental 4 after the GitHub outage on August 17, 2026. **No functional firmware, driver, or GUI changes** were made for 4.1.
 
-          ### exp.4 changes
-          - Tests explicit ACPI `ResourceSource` routing of the BCM2712 property mailbox to the `SOCB` producer to address the observed Windows Code 12 resource conflict.
-          - UEFI programs the fan to 100% at ExitBootServices so Windows always inherits a running fail-safe fan state.
-          - Windows driver version is `2026.8.17.4`.
-          - Driver API supports Automatic, Manual 30-100%, status telemetry, and Force 100%.
-          - Temperature-read failure forces 100%.
-          - Manual mode has an 85 C emergency override to 100%.
-          - Normal D0 exit and hardware release request 100% before resources are released.
-          - Windows 11 ARM64 GUI shows SoC temperature, commanded PWM percentage, mode/status, safety state, controls, and CSV logging.
-          - Actual RPM is not reported until tachometer support is implemented.
+          This release uses the recovered successful GitHub Actions artifacts from run `32033014574`, built from source commit `62b0cb81c0758c8609c4406dcba7ca4543b85ef2`.
+
+          ### Re-verified before publication
+          - fan-curve tests passed
+          - Windows ARM64 KMDF build and INF/package validation passed
+          - one-shot installer decode/hash test passed
+          - Windows 11 ARM64 GUI build passed
+          - Raspberry Pi 5 UEFI Debug and Release builds passed
+          - driver bundle SHA-256 checks passed again
+          - UEFI internal SHA-256 checks passed again
+          - driver and GUI binaries confirmed ARM64
+          - UEFI source revision confirmed `62b0cb81...`
+
+          ### exp.4 functionality carried forward
+          - ACPI BCM2712 mailbox `ResourceSource` routing through `SOCB` to test the Windows Code 12 fix
+          - UEFI forces 100% fan at ExitBootServices
+          - Windows DriverVer `2026.8.17.4`
+          - Automatic, Manual 30-100%, status telemetry, and Force 100%
+          - temperature-read failure => 100%
+          - manual-mode >=85 C override => 100%
+          - ARM64 GUI with SoC temperature, commanded PWM %, mode/safety status, controls, and CSV logging
 
           ### Assets
-          - `RPi5_UEFI_Release_exp4.zip` - matching UEFI firmware containing the ACPI and 100% Windows-handoff changes.
-          - `Install_RPi5Fan_OneShot.cmd` - one-shot Windows driver installer.
-          - `RPi5Fan_ARM64_exp4.zip` - Windows ARM64 driver package.
-          - `RPi5FanControl_ARM64_exp4.zip` - self-contained Windows 11 ARM64 GUI.
-          - `SHA256SUMS_exp4.txt` - SHA-256 hashes for all four release payloads.
+          - `RPi5_UEFI_Release_exp4.1.zip`
+          - `Install_RPi5Fan_OneShot.cmd`
+          - `RPi5Fan_ARM64_exp4.1.zip`
+          - `RPi5FanControl_ARM64_exp4.1.zip`
+          - `SHA256SUMS_exp4.1.txt`
+          - `PROVENANCE_exp4.1.txt`
 
-          ### Test order
-          Install/boot the matching exp.4 UEFI first, confirm the fan is running, then install the exp.4 driver. The first hardware milestone is Device Manager showing the `ACPI\\RPI000F` fan device with **Code 0** instead of Code 12. Only after Code 0 should automatic temperature/PWM behavior and GUI controls be exercised.
+          ### First hardware milestone
+          Boot the matching exp.4.1 UEFI first. Then install the exp.4.1 driver. Check `ACPI\\RPI000F` in Device Manager: the first goal is **Code 0 instead of Code 12**.
 
           ### Safety
-          This is still an experimental physical-validation release. UEFI hands Windows a 100% fan state. The driver has no 0% command and manual control is restricted to 30-100%. Keep the board supervised during the first hardware test.
+          This remains an experimental physical-validation release. UEFI hands Windows a 100% fan state; the driver exposes no 0% command and manual control is restricted to 30-100%.
           EOF
 
-      - name: Publish exp.4 prerelease
+      - name: Publish exp.4.1 prerelease
         uses: softprops/action-gh-release@v3.0.2
         with:
-          tag_name: rpi5fan-v0.1.1-exp.4
+          tag_name: rpi5fan-v0.1.1-exp.4.1
           target_commitish: 62b0cb81c0758c8609c4406dcba7ca4543b85ef2
-          name: RPi5 Fan Driver v0.1.1 experimental 4
+          name: RPi5 Fan Driver v0.1.1 experimental 4.1
           body_path: release-notes.md
           draft: false
           prerelease: true
