@@ -61,10 +61,11 @@ public partial class MainWindow : Window
         {
             _reportedConnection = false;
             DriverText.Text = "Unavailable";
+            TempProviderText.Text = "Provider: unavailable";
             TemperatureText.Text = "--";
             FanPercentText.Text = "--";
             ModeText.Text = "--";
-            SafetyText.Text = "Driver unavailable. UEFI fail-safe should remain at the last non-zero handoff state.";
+            SafetyText.Text = "Fan driver unavailable. Verify the physical fan is still spinning. UEFI hands Windows a 100% fan state, but an abrupt kernel failure cannot run driver cleanup.";
             AddRecent($"{DateTime.Now:HH:mm:ss} ERROR {ex.Message}");
             TryAppendRawError(ex.Message);
             _driver.Dispose();
@@ -74,6 +75,9 @@ public partial class MainWindow : Window
     private void UpdateDashboard(DriverStatus status)
     {
         DriverText.Text = status.HardwareReady != 0 ? "Ready" : "Loaded";
+        TempProviderText.Text = status.TemperatureProviderReady != 0
+            ? $"Provider: ready (API {status.TemperatureProviderApiVersion})"
+            : $"Provider: unavailable (0x{status.LastTemperatureProviderStatus:X8})";
         TemperatureText.Text = status.TemperatureValid != 0
             ? $"{status.TemperatureMilliCelsius / 1000.0:F1} °C"
             : "--";
@@ -84,7 +88,11 @@ public partial class MainWindow : Window
 
         if (status.HardwareReady == 0)
         {
-            SafetyText.Text = "Hardware is not ready; Windows has not taken fan control.";
+            SafetyText.Text = "Fan hardware is not ready; Windows has not taken PWM control.";
+        }
+        else if (status.TemperatureProviderReady == 0)
+        {
+            SafetyText.Text = $"Temperature provider unavailable — fan forced to 100% (provider status 0x{status.LastTemperatureProviderStatus:X8}).";
         }
         else if (status.OverTemperatureOverride != 0)
         {
@@ -92,7 +100,7 @@ public partial class MainWindow : Window
         }
         else if (status.FailSafeActive != 0 && status.TemperatureValid == 0)
         {
-            SafetyText.Text = $"Telemetry fail-safe active — fan forced to 100% (failures: {status.ConsecutiveTemperatureFailures}).";
+            SafetyText.Text = $"Temperature fail-safe active — fan forced to 100% (failures: {status.ConsecutiveTemperatureFailures}).";
         }
         else if (status.FailSafeActive != 0)
         {
@@ -100,7 +108,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            SafetyText.Text = "Normal control active. The driver will never intentionally command less than 30%.";
+            SafetyText.Text = "Normal split-driver control active. The driver will never intentionally command less than 30%.";
         }
 
         FooterText.Text = status.FanRpmValid != 0
@@ -110,24 +118,18 @@ public partial class MainWindow : Window
 
     private void Automatic_Click(object sender, RoutedEventArgs e)
     {
-        RunControlAction(
-            () => _driver.SetAutomatic(),
-            "automatic-selected");
+        RunControlAction(() => _driver.SetAutomatic(), "automatic-selected");
     }
 
     private void Manual_Click(object sender, RoutedEventArgs e)
     {
         uint percent = (uint)Math.Round(ManualSlider.Value);
-        RunControlAction(
-            () => _driver.SetManual(percent),
-            $"manual-selected-{percent}%");
+        RunControlAction(() => _driver.SetManual(percent), $"manual-selected-{percent}%");
     }
 
     private void FailSafe_Click(object sender, RoutedEventArgs e)
     {
-        RunControlAction(
-            () => _driver.SetFailSafe100(),
-            "force-100%-selected");
+        RunControlAction(() => _driver.SetFailSafe100(), "force-100%-selected");
     }
 
     private void RunControlAction(Action action, string eventName)
@@ -173,6 +175,8 @@ public partial class MainWindow : Window
             status.RequestedPercent,
             mode,
             status.HardwareReady,
+            status.TemperatureProviderReady,
+            $"0x{status.LastTemperatureProviderStatus:X8}",
             status.FailSafeActive,
             status.OverTemperatureOverride,
             status.ConsecutiveTemperatureFailures,
@@ -182,23 +186,16 @@ public partial class MainWindow : Window
         AppendCsvLine(line);
         AddRecent(
             $"{DateTime.Now:HH:mm:ss}  Temp={(temperature.Length == 0 ? "--" : temperature + "C"),6}  " +
-            $"Fan={status.CurrentPercent,3}%  Mode={mode,-9}  Safe={status.FailSafeActive}  {eventName}");
+            $"Fan={status.CurrentPercent,3}%  Mode={mode,-9}  TempDrv={status.TemperatureProviderReady}  Safe={status.FailSafeActive}  {eventName}");
     }
 
     private void AppendEvent(string eventName)
     {
         string line = string.Join(",",
             DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture),
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
+            string.Empty, string.Empty, string.Empty, string.Empty, string.Empty,
+            string.Empty, string.Empty, string.Empty, string.Empty, string.Empty,
+            string.Empty, string.Empty,
             EscapeCsv(eventName));
         AppendCsvLine(line);
         AddRecent($"{DateTime.Now:HH:mm:ss}  {eventName}");
@@ -223,7 +220,7 @@ public partial class MainWindow : Window
         {
             File.WriteAllText(
                 path,
-                "timestamp,temperature_c,temperature_valid,current_percent,requested_percent,mode,hardware_ready,failsafe,overtemp,temp_failures,rpm,event" + Environment.NewLine,
+                "timestamp,temperature_c,temperature_valid,current_percent,requested_percent,mode,hardware_ready,temp_provider_ready,temp_provider_status,failsafe,overtemp,temp_failures,rpm,event" + Environment.NewLine,
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         }
         File.AppendAllText(path, line + Environment.NewLine, new UTF8Encoding(false));
