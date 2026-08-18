@@ -1,0 +1,3 @@
+Temporary same-repository trigger for corrected pinned exp.5A validation/build/release.
+
+No firmware, driver, GUI, installer, or build-content changes.
