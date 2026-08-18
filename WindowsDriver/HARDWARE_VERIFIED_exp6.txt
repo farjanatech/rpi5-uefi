@@ -1,0 +1,6 @@
+HARDWARE VERIFIED
+release=rpi5fan-v0.1.1-exp.6
+date=2026-08-19
+platform=Raspberry Pi 5 / Windows 11 ARM64
+status=combined split drivers and GUI working on physical hardware
+driver_version=2026.8.18.6
