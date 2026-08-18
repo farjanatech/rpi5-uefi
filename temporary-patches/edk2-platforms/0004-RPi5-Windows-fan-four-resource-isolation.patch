@@ -1,0 +1,35 @@
+diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
+--- a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
++++ b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
+@@ -1,8 +1,8 @@
+ //
+ // Raspberry Pi 5 cooling-fan interface for the experimental Windows ARM64
+-// driver. Resource order is an ABI: clocks, PWM1, GPIO bank 2, pad bank 2,
+-// then the BCM2712 property mailbox.
++// driver. exp.5A intentionally exposes only the four RP1 fan-control
++// resources. The BCM2712 property mailbox is not consumed by FAN0.
+ //
+ Device (FAN0) {
+   Name (_HID, "RPI000F")
+   Name (_UID, 0x0)
+@@ -13,20 +13,6 @@
+       RP1_QWORDMEMORY_BUF (00)
+       RP1_QWORDMEMORY_BUF (01)
+       RP1_QWORDMEMORY_BUF (02)
+       RP1_QWORDMEMORY_BUF (03)
+-      QWordMemory (ResourceConsumer,
+-        PosDecode,
+-        MinFixed,
+-        MaxFixed,
+-        NonCacheable,
+-        ReadWrite,
+-        0x0,
+-        0x000000107C013880,
+-        0x000000107C0138BF,
+-        0x0,
+-        0x40,
+-        0,
+-        "\\_SB.SOCB",
+-        )
+     })
+     RP1_QWORDMEMORY_SET (00, RP1_CLOCKS_MAIN_BASE, 0x1000)
