@@ -1,0 +1,227 @@
+name: Fan exp.6 split-driver combo
+
+on:
+  pull_request:
+    paths:
+      - 'WindowsDriver/**'
+      - '.github/workflows/fan-exp6.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FUNCTIONAL_COMMIT: 302969fc9b61f6f1d099d24c46d27a1a0dca936e
+  DRIVER_VERSION: 2026.8.18.6
+
+jobs:
+  curve-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.FUNCTIONAL_COMMIT }}
+      - name: Compile and test fan curve
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror WindowsDriver/Rpi5Fan/tests/FanCurveTests.c -o fan-curve-tests
+          ./fan-curve-tests
+
+  drivers:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.FUNCTIONAL_COMMIT }}
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v3
+        with:
+          vs-version: '[17.0,18.0)'
+          msbuild-architecture: x64
+
+      - name: Restore and build ARM64 Rpi5Temp and Rpi5Fan
+        shell: pwsh
+        run: |
+          $projects = @(
+            'WindowsDriver\Rpi5Temp\Rpi5Temp.vcxproj',
+            'WindowsDriver\Rpi5Fan\Rpi5Fan.vcxproj'
+          )
+          foreach ($project in $projects) {
+            msbuild $project /t:Restore /p:Configuration=Release /p:Platform=ARM64 /p:TargetPlatformVersion=10.0.26100.0
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            msbuild $project /m /p:Configuration=Release /p:Platform=ARM64 /p:TargetPlatformVersion=10.0.26100.0
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Normalize driver packages
+        shell: pwsh
+        run: |
+          foreach ($name in 'Rpi5Temp','Rpi5Fan') {
+            $root = "WindowsDriver\$name\bin\ARM64\Release"
+            $dir = Join-Path $root $name
+            $cert = Join-Path $root "$name.cer"
+            if (-not (Test-Path -LiteralPath $cert)) { throw "Missing WDK test certificate: $cert" }
+            Copy-Item -LiteralPath $cert -Destination (Join-Path $dir "$name.cer") -Force
+            $cat = Get-ChildItem -LiteralPath $dir -Filter '*.cat' | Select-Object -First 1
+            if ($null -eq $cat) { throw "Missing catalog in $dir" }
+            $expectedCat = if ($name -eq 'Rpi5Temp') { 'rpi5temp.cat' } else { 'rpi5fan.cat' }
+            if ($cat.Name -cne $expectedCat) {
+              Copy-Item -LiteralPath $cat.FullName -Destination (Join-Path $dir $expectedCat) -Force
+            }
+            foreach ($file in "$name.inf","$name.sys",$expectedCat,"$name.cer") {
+              if (-not (Test-Path -LiteralPath (Join-Path $dir $file))) { throw "Incomplete package: $dir\$file" }
+            }
+          }
+
+      - name: Verify INFs and split ownership contract
+        shell: pwsh
+        run: |
+          $infverif = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.windows.wdk.x64\10.0.26100.6584\c\tools\10.0.26100.0\x64\infverif.exe'
+          foreach ($pair in @(
+            @('WindowsDriver\Rpi5Temp\bin\ARM64\Release\Rpi5Temp\Rpi5Temp.inf','ACPI\\RPI0010'),
+            @('WindowsDriver\Rpi5Fan\bin\ARM64\Release\Rpi5Fan\Rpi5Fan.inf','ACPI\\RPI000F')
+          )) {
+            & $infverif /w $pair[0]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $text = Get-Content -LiteralPath $pair[0] -Raw
+            if ($text -notmatch 'DriverVer\s*=\s*08/18/2026\s*,\s*2026\.8\.18\.6') { throw "Wrong DriverVer: $($pair[0])" }
+            if ($text -notmatch 'NTARM64' -or $text -notmatch $pair[1]) { throw "Wrong ARM64 ACPI binding: $($pair[0])" }
+          }
+
+          $fan = Get-Content 'WindowsDriver\Rpi5Fan\Driver.c' -Raw
+          $fanApi = Get-Content 'WindowsDriver\Rpi5Fan\Rpi5FanIoctl.h' -Raw
+          $temp = Get-Content 'WindowsDriver\Rpi5Temp\Driver.c' -Raw
+          if ($fan -match '107c013880|BCM2712_MAILBOX_PHYSICAL|MmAllocateContiguousMemorySpecifyCache') { throw 'Rpi5Fan still contains BCM2712 mailbox ownership.' }
+          if ($fan -notmatch 'PHYSICAL_ADDRESS starts\[4\]' -or $fan -notmatch 'WdfIoTargetSendIoctlSynchronously') { throw 'Rpi5Fan is not the expected four-resource split consumer.' }
+          if ($fan -notmatch 'FAN_MANUAL_OVERTEMP_MILLIC\s+85000u') { throw '85 C override missing.' }
+          if ($fanApi -notmatch 'RPI5FAN_API_VERSION\s+2u' -or $fanApi -notmatch 'RPI5FAN_MINIMUM_PERCENT\s+30u') { throw 'Fan API v2/safety floor missing.' }
+          if ($temp -notmatch 'BCM2712_MAILBOX_PHYSICAL\s+0x000000107c013880ll' -or $temp -notmatch 'memoryCount != 1') { throw 'Rpi5Temp mailbox-only ownership check missing.' }
+          if ($temp -match 'PWM_CHANNEL|FAN_GPIO') { throw 'Rpi5Temp unexpectedly contains fan PWM/GPIO control.' }
+
+      - name: Verify ARM64 PE machine type
+        shell: pwsh
+        run: |
+          function Get-PeMachine([string]$Path) {
+            $stream = [IO.File]::OpenRead($Path)
+            try {
+              $reader = New-Object IO.BinaryReader($stream)
+              $stream.Position = 0x3c
+              $peOffset = $reader.ReadInt32()
+              $stream.Position = $peOffset + 4
+              return $reader.ReadUInt16()
+            } finally { $stream.Dispose() }
+          }
+          foreach ($path in @(
+            'WindowsDriver\Rpi5Temp\bin\ARM64\Release\Rpi5Temp\Rpi5Temp.sys',
+            'WindowsDriver\Rpi5Fan\bin\ARM64\Release\Rpi5Fan\Rpi5Fan.sys'
+          )) {
+            $machine = Get-PeMachine $path
+            if ($machine -ne 0xAA64) { throw "$path machine type is 0x$($machine.ToString('X4')), expected ARM64 0xAA64." }
+            Write-Host "$path -> ARM64 (0xAA64)"
+          }
+
+      - name: Upload verified ARM64 driver packages
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: RPi5Fan_Drivers_ARM64_exp6
+          path: |
+            WindowsDriver/Rpi5Temp/bin/ARM64/Release/Rpi5Temp/Rpi5Temp.inf
+            WindowsDriver/Rpi5Temp/bin/ARM64/Release/Rpi5Temp/Rpi5Temp.sys
+            WindowsDriver/Rpi5Temp/bin/ARM64/Release/Rpi5Temp/rpi5temp.cat
+            WindowsDriver/Rpi5Temp/bin/ARM64/Release/Rpi5Temp/Rpi5Temp.cer
+            WindowsDriver/Rpi5Fan/bin/ARM64/Release/Rpi5Fan/Rpi5Fan.inf
+            WindowsDriver/Rpi5Fan/bin/ARM64/Release/Rpi5Fan/Rpi5Fan.sys
+            WindowsDriver/Rpi5Fan/bin/ARM64/Release/Rpi5Fan/rpi5fan.cat
+            WindowsDriver/Rpi5Fan/bin/ARM64/Release/Rpi5Fan/Rpi5Fan.cer
+          if-no-files-found: error
+
+  gui:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.FUNCTIONAL_COMMIT }}
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish self-contained Windows ARM64 GUI
+        shell: pwsh
+        run: |
+          dotnet publish 'WindowsDriver\Rpi5FanGui\Rpi5FanGui.csproj' -c Release -r win-arm64 --self-contained true -o 'fan-gui-release'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path 'fan-gui-release\Rpi5FanControl.exe')) { throw 'GUI executable missing.' }
+          $stream = [IO.File]::OpenRead('fan-gui-release\Rpi5FanControl.exe')
+          try {
+            $reader = New-Object IO.BinaryReader($stream)
+            $stream.Position = 0x3c
+            $peOffset = $reader.ReadInt32()
+            $stream.Position = $peOffset + 4
+            $machine = $reader.ReadUInt16()
+          } finally { $stream.Dispose() }
+          if ($machine -ne 0xAA64) { throw "GUI is not ARM64: 0x$($machine.ToString('X4'))" }
+      - name: Upload ARM64 GUI
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: RPi5Fan_GUI_ARM64_exp6
+          path: fan-gui-release/*
+          if-no-files-found: error
+
+  combo:
+    runs-on: windows-2022
+    needs: [curve-tests, drivers, gui]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.FUNCTIONAL_COMMIT }}
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: RPi5Fan_Drivers_ARM64_exp6
+          path: recovered-drivers
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: RPi5Fan_GUI_ARM64_exp6
+          path: recovered-gui
+      - name: Assemble combined installer + drivers + GUI
+        shell: pwsh
+        run: |
+          $root = 'combo\RPi5FanControl_ARM64_exp6'
+          New-Item -ItemType Directory -Path "$root\Drivers\Rpi5Temp","$root\Drivers\Rpi5Fan","$root\GUI" -Force | Out-Null
+
+          $tempFiles = Get-ChildItem 'recovered-drivers' -Recurse -File | Where-Object { $_.Name -in @('Rpi5Temp.inf','Rpi5Temp.sys','rpi5temp.cat','Rpi5Temp.cer') }
+          $fanFiles = Get-ChildItem 'recovered-drivers' -Recurse -File | Where-Object { $_.Name -in @('Rpi5Fan.inf','Rpi5Fan.sys','rpi5fan.cat','Rpi5Fan.cer') }
+          foreach ($f in $tempFiles) { Copy-Item $f.FullName "$root\Drivers\Rpi5Temp\$($f.Name)" -Force }
+          foreach ($f in $fanFiles) { Copy-Item $f.FullName "$root\Drivers\Rpi5Fan\$($f.Name)" -Force }
+          Copy-Item 'recovered-gui\*' "$root\GUI" -Recurse -Force
+          Copy-Item 'WindowsDriver\Install.cmd' "$root\Install.cmd"
+          Copy-Item 'WindowsDriver\Install-RPi5FanSuite.ps1' "$root\Install-RPi5FanSuite.ps1"
+          Copy-Item 'WindowsDriver\README-exp6.md' "$root\README.md"
+          Copy-Item 'THIRD_PARTY_NOTICES.md' "$root\THIRD_PARTY_NOTICES.md"
+          Copy-Item 'LICENSES\Soulveig-BSD-2-Clause-Patent.txt' "$root\LICENSE.txt"
+
+          foreach ($required in @(
+            "$root\Drivers\Rpi5Temp\Rpi5Temp.inf", "$root\Drivers\Rpi5Temp\Rpi5Temp.sys", "$root\Drivers\Rpi5Temp\rpi5temp.cat", "$root\Drivers\Rpi5Temp\Rpi5Temp.cer",
+            "$root\Drivers\Rpi5Fan\Rpi5Fan.inf", "$root\Drivers\Rpi5Fan\Rpi5Fan.sys", "$root\Drivers\Rpi5Fan\rpi5fan.cat", "$root\Drivers\Rpi5Fan\Rpi5Fan.cer",
+            "$root\GUI\Rpi5FanControl.exe", "$root\Install.cmd", "$root\Install-RPi5FanSuite.ps1"
+          )) { if (-not (Test-Path $required)) { throw "Combo missing $required" } }
+
+          Compress-Archive -Path "$root\*" -DestinationPath 'combo\RPi5FanControl_ARM64_exp6.zip' -CompressionLevel Optimal
+          $hash = (Get-FileHash 'combo\RPi5FanControl_ARM64_exp6.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  RPi5FanControl_ARM64_exp6.zip" | Set-Content 'combo\SHA256SUMS_exp6.txt' -Encoding ascii
+          @(
+            "functional_commit=${{ env.FUNCTIONAL_COMMIT }}",
+            "driver_version=${{ env.DRIVER_VERSION }}",
+            "fan_hid=ACPI\\RPI000F",
+            "temp_hid=ACPI\\RPI0010",
+            "safety=temperature/provider failure forces 100%; manual 30-100%"
+          ) | Set-Content 'combo\PROVENANCE_exp6.txt' -Encoding ascii
+          Get-ChildItem combo | Format-Table Name,Length
+          Get-Content 'combo\SHA256SUMS_exp6.txt'
+      - name: Upload combined exp.6 package
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: RPi5FanControl_combo_exp6
+          path: |
+            combo/RPi5FanControl_ARM64_exp6.zip
+            combo/SHA256SUMS_exp6.txt
+            combo/PROVENANCE_exp6.txt
+          if-no-files-found: error
