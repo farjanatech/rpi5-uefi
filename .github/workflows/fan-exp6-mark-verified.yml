@@ -1,0 +1,65 @@
+name: Mark fan exp.6 hardware verified
+
+on:
+  pull_request:
+    branches:
+      - fan-persistent-windows-driver-exp5b
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  mark-verified:
+    if: ${{ contains(github.event.pull_request.title, '[fan-exp6-verify]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write verified release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## ✅ Hardware verified — Raspberry Pi 5 Fan Control exp.6
+
+          **Physical hardware verification completed on 2026-08-19.** The combined Windows 11 ARM64 split-driver + GUI package has been tested on a Raspberry Pi 5 using the validated exp.5B ACPI/UEFI resource layout, and the driver/GUI combination is reported working correctly on the target system.
+
+          ### Verified configuration
+          - `Rpi5Temp.sys` binds `ACPI\\RPI0010` and owns the BCM2712 property-mailbox range.
+          - `Rpi5Fan.sys` binds `ACPI\\RPI000F` and owns the four RP1 fan-control resources.
+          - The exp.5B UEFI split-resource layout is retained.
+          - Windows 11 ARM64 combined installer + GUI is functioning on physical Raspberry Pi 5 hardware.
+          - Driver version: `2026.8.18.6`.
+
+          ### Package behavior
+          - Fan D0 entry starts at 100%.
+          - Missing, failed, invalid, or stale temperature telemetry keeps/forces the 100% fail-safe command.
+          - Temperature >=85 C forces 100%.
+          - Manual control is restricted to 30-100%.
+          - Normal D0 exit and hardware release request 100%.
+          - There is no 0% fan-control API.
+          - The GUI provides SoC temperature, commanded PWM percentage, mode/provider/safety status, controls, and CSV logging.
+
+          ### Remaining scope note
+          Actual tachometer RPM measurement is still not implemented; the GUI reports commanded PWM percentage rather than inventing RPM. Also, an arbitrary hard kernel crash after a lower PWM command cannot execute driver cleanup, so RP1 PWM may retain the last commanded non-zero 30-100% value. A separate independent watchdog would be required to guarantee automatic 100% after an arbitrary crash.
+
+          ### Release provenance
+          Verified CI build run: `32164627975`.
+          Functional source commit: `302969fc9b61f6f1d099d24c46d27a1a0dca936e`.
+          Release tag target: `84bbe074ac7c41e89e2d17d2adacf650314bd655`.
+
+          Recommended download: **RPi5FanControl_ARM64_exp6.zip**.
+          EOF
+
+      - name: Mark existing exp.6 release hardware verified
+        uses: softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: rpi5fan-v0.1.1-exp.6
+          target_commitish: 84bbe074ac7c41e89e2d17d2adacf650314bd655
+          name: RPi5 Fan Control v0.1.1 experimental 6 — Hardware Verified
+          body_path: release-notes.md
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+          make_latest: false
