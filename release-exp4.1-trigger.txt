@@ -1,3 +1,4 @@
 Temporary same-repository pull-request trigger for the clean exp.4.1 republication after the August 17, 2026 GitHub outage.
 
 This file carries no firmware, driver, GUI, installer, or build-content changes.
+Verifier synchronization: catalog filename case corrected for Linux.
