@@ -1,10 +1,12 @@
 /**
  * Experimental Raspberry Pi 5 Active Cooler KMDF driver.
  *
- * This driver binds only to the ACPI\\RPI000F device published by the
- * companion UEFI patch. It never intentionally commands the fan below 30%.
- * Any temperature-telemetry failure, power transition, or driver teardown
- * requests 100% before releasing hardware ownership.
+ * This driver binds only to ACPI\RPI000F and owns the four RP1 fan-control
+ * MMIO resources. BCM2712 temperature access is deliberately separated into
+ * Rpi5Temp.sys (ACPI\RPI0010). If the provider is absent, stale, invalid, or
+ * returns an error, this driver commands the fan to 100%.
+ *
+ * The driver never intentionally commands the fan below 30%.
  *
  * SPDX-License-Identifier: BSD-2-Clause-Patent
  */
@@ -13,13 +15,13 @@
 #include "FanCurve.h"
 
 #define FAN_TIMER_MS                     2000
+#define FAN_TEMP_IO_TIMEOUT_MS           500
 #define FAN_FAILSAFE_PERCENT             RPI5FAN_MAXIMUM_PERCENT
 #define FAN_MINIMUM_PERCENT              RPI5FAN_MINIMUM_PERCENT
 #define FAN_MANUAL_OVERTEMP_MILLIC       85000u
 #define RP1_PWM1_FROM_CLOCKS              0x00084000ll
 #define RP1_GPIO2_FROM_CLOCKS             0x000c0000ll
 #define RP1_PADS2_FROM_CLOCKS             0x000e0000ll
-#define BCM2712_MAILBOX_PHYSICAL          0x000000107c013880ll
 
 #define FAN_GPIO_PIN_IN_BANK             11
 #define FAN_GPIO_CTRL                    (FAN_GPIO_PIN_IN_BANK * 8 + 0x004)
@@ -53,19 +55,6 @@
 #define PWM_SET_UPDATE                   (1u << 31)
 #define PWM_PERIOD_TICKS                 2078
 #define PWM_MAX_DUTY_TICKS               2038
-
-#define MBOX_READ                        0x00
-#define MBOX_STATUS                      0x18
-#define MBOX_WRITE                       0x20
-#define MBOX_STATUS_FULL                 (1u << 31)
-#define MBOX_STATUS_EMPTY                (1u << 30)
-#define MBOX_PROPERTY_CHANNEL            8u
-#define MBOX_BUS_ALIAS                   0xc0000000u
-#define MBOX_GET_TEMPERATURE             0x00030006u
-#define MBOX_RESPONSE_SUCCESS            0x80000000u
-#define MBOX_TAG_RESPONSE                0x80000000u
-#define MBOX_POLL_COUNT                  1000
-#define MBOX_POLL_DELAY_US               10
 
 const GUID GUID_DEVINTERFACE_RPI5FAN =
     { 0x5ad47920, 0x26fc, 0x4ee8,
@@ -101,10 +90,6 @@ FanUnmapResources(_Inout_ PFAN_DEVICE_CONTEXT Context)
     if (Context->Pads != NULL) {
         MmUnmapIoSpace(Context->Pads, Context->PadsLength);
         Context->Pads = NULL;
-    }
-    if (Context->Mailbox != NULL) {
-        MmUnmapIoSpace(Context->Mailbox, Context->MailboxLength);
-        Context->Mailbox = NULL;
     }
 }
 
@@ -154,77 +139,80 @@ FanSetPercent(_Inout_ PFAN_DEVICE_CONTEXT Context, _In_ UCHAR Percent)
 
 _Success_(return != FALSE)
 static BOOLEAN
-FanReadTemperature(_Inout_ PFAN_DEVICE_CONTEXT Context,
-                   _Out_ PULONG MilliCelsius)
+FanReadTemperatureFromProvider(_In_ WDFDEVICE Device,
+                               _Inout_ PFAN_DEVICE_CONTEXT Context,
+                               _Out_ PULONG MilliCelsius)
 {
-    volatile ULONG *message;
-    ULONG request;
-    ULONG value;
-    ULONG i;
+    UNICODE_STRING targetName = RTL_CONSTANT_STRING(L"\\DosDevices\\Rpi5Temp");
+    WDFIOTARGET target = NULL;
+    WDF_IO_TARGET_OPEN_PARAMS openParams;
+    WDF_MEMORY_DESCRIPTOR outputDescriptor;
+    WDF_REQUEST_SEND_OPTIONS sendOptions;
+    RPI5TEMP_STATUS tempStatus;
+    ULONG_PTR bytesReturned = 0;
+    NTSTATUS status;
 
-    if (Context->Message == NULL || Context->MessagePhysical.HighPart != 0 ||
-        Context->MessagePhysical.LowPart > 0x3fffffffu) {
+    RtlZeroMemory(&tempStatus, sizeof(tempStatus));
+    Context->TemperatureProviderReady = FALSE;
+    Context->TemperatureProviderApiVersion = 0;
+
+    status = WdfIoTargetCreate(Device, WDF_NO_OBJECT_ATTRIBUTES, &target);
+    if (!NT_SUCCESS(status)) {
+        Context->LastTemperatureProviderStatus = status;
         return FALSE;
     }
 
-    message = (volatile ULONG *)Context->Message;
-    RtlZeroMemory(Context->Message, PAGE_SIZE);
-    message[0] = 8u * sizeof(ULONG);
-    message[1] = 0;
-    message[2] = MBOX_GET_TEMPERATURE;
-    message[3] = 2u * sizeof(ULONG);
-    message[4] = 0;
-    message[5] = 0;
-    message[6] = 0;
-    message[7] = 0;
-
-    request = (Context->MessagePhysical.LowPart + MBOX_BUS_ALIAS) |
-              MBOX_PROPERTY_CHANNEL;
-    KeMemoryBarrier();
-
-    for (i = 0; i < MBOX_POLL_COUNT; ++i) {
-        if ((FanRead32(Context->Mailbox, MBOX_STATUS) & MBOX_STATUS_EMPTY) != 0) {
-            break;
-        }
-        (void)FanRead32(Context->Mailbox, MBOX_READ);
-    }
-    if (i == MBOX_POLL_COUNT) {
+    WDF_IO_TARGET_OPEN_PARAMS_INIT_OPEN_BY_NAME(
+        &openParams, &targetName, GENERIC_READ);
+    openParams.ShareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
+    status = WdfIoTargetOpen(target, &openParams);
+    if (!NT_SUCCESS(status)) {
+        Context->LastTemperatureProviderStatus = status;
+        WdfObjectDelete(target);
         return FALSE;
     }
 
-    for (i = 0; i < MBOX_POLL_COUNT; ++i) {
-        if ((FanRead32(Context->Mailbox, MBOX_STATUS) & MBOX_STATUS_FULL) == 0) {
-            FanWrite32(Context->Mailbox, MBOX_WRITE, request);
-            break;
-        }
-        KeStallExecutionProcessor(MBOX_POLL_DELAY_US);
-    }
-    if (i == MBOX_POLL_COUNT) {
+    WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(
+        &outputDescriptor, &tempStatus, sizeof(tempStatus));
+    WDF_REQUEST_SEND_OPTIONS_INIT(
+        &sendOptions, WDF_REQUEST_SEND_OPTION_TIMEOUT);
+    WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(
+        &sendOptions, WDF_REL_TIMEOUT_IN_MS(FAN_TEMP_IO_TIMEOUT_MS));
+
+    status = WdfIoTargetSendIoctlSynchronously(
+        target,
+        WDF_NO_HANDLE,
+        IOCTL_RPI5TEMP_GET_TEMPERATURE,
+        NULL,
+        &outputDescriptor,
+        &sendOptions,
+        &bytesReturned);
+
+    Context->LastTemperatureProviderStatus = status;
+    WdfObjectDelete(target);
+
+    if (!NT_SUCCESS(status) || bytesReturned < sizeof(tempStatus) ||
+        tempStatus.Size < sizeof(tempStatus) ||
+        tempStatus.ApiVersion != RPI5TEMP_API_VERSION) {
         return FALSE;
     }
 
-    for (i = 0; i < MBOX_POLL_COUNT; ++i) {
-        if ((FanRead32(Context->Mailbox, MBOX_STATUS) & MBOX_STATUS_EMPTY) == 0) {
-            value = FanRead32(Context->Mailbox, MBOX_READ);
-            if (value == request) {
-                KeMemoryBarrier();
-                if (message[1] != MBOX_RESPONSE_SUCCESS ||
-                    (message[4] & MBOX_TAG_RESPONSE) == 0 ||
-                    message[6] < 5000u || message[6] > 150000u) {
-                    return FALSE;
-                }
-                *MilliCelsius = message[6];
-                return TRUE;
-            }
-        }
-        KeStallExecutionProcessor(MBOX_POLL_DELAY_US);
+    Context->TemperatureProviderApiVersion = tempStatus.ApiVersion;
+    Context->TemperatureProviderReady = tempStatus.HardwareReady != 0;
+    if (!Context->TemperatureProviderReady ||
+        tempStatus.TemperatureValid == 0 ||
+        tempStatus.TemperatureMilliCelsius < 5000u ||
+        tempStatus.TemperatureMilliCelsius > 150000u) {
+        return FALSE;
     }
 
-    return FALSE;
+    *MilliCelsius = tempStatus.TemperatureMilliCelsius;
+    return TRUE;
 }
 
 static VOID
-FanApplyControlLocked(_Inout_ PFAN_DEVICE_CONTEXT Context)
+FanApplyControlLocked(_In_ WDFDEVICE Device,
+                      _Inout_ PFAN_DEVICE_CONTEXT Context)
 {
     ULONG temperature;
     UCHAR percent = FAN_FAILSAFE_PERCENT;
@@ -234,7 +222,7 @@ FanApplyControlLocked(_Inout_ PFAN_DEVICE_CONTEXT Context)
         return;
     }
 
-    if (FanReadTemperature(Context, &temperature)) {
+    if (FanReadTemperatureFromProvider(Device, Context, &temperature)) {
         Context->LastTemperatureMilliCelsius = temperature;
         Context->TemperatureValid = TRUE;
         Context->ConsecutiveTemperatureFailures = 0;
@@ -278,7 +266,7 @@ FanEvtTimer(_In_ WDFTIMER Timer)
 
     WdfWaitLockAcquire(context->Lock, NULL);
     if (context->TimerEnabled && context->HardwareReady) {
-        FanApplyControlLocked(context);
+        FanApplyControlLocked(device, context);
         if (context->TimerEnabled && context->HardwareReady) {
             WdfTimerStart(context->Timer,
                           WDF_REL_TIMEOUT_IN_MS(FAN_TIMER_MS));
@@ -293,16 +281,14 @@ FanEvtPrepareHardware(_In_ WDFDEVICE Device,
                       _In_ WDFCMRESLIST ResourcesTranslated)
 {
     PFAN_DEVICE_CONTEXT context = FanGetContext(Device);
-    PHYSICAL_ADDRESS starts[5] = { 0 };
-    ULONG lengths[5] = { 0 };
+    PHYSICAL_ADDRESS starts[4] = { 0 };
+    ULONG lengths[4] = { 0 };
     ULONG memoryCount = 0;
     ULONG count;
     ULONG i;
-    PHYSICAL_ADDRESS low = { 0 };
-    PHYSICAL_ADDRESS high;
-    PHYSICAL_ADDRESS boundary = { 0 };
 
     UNREFERENCED_PARAMETER(ResourcesRaw);
+
     count = WdfCmResourceListGetCount(ResourcesTranslated);
     for (i = 0; i < count && memoryCount < RTL_NUMBER_OF(starts); ++i) {
         PCM_PARTIAL_RESOURCE_DESCRIPTOR descriptor =
@@ -313,14 +299,13 @@ FanEvtPrepareHardware(_In_ WDFDEVICE Device,
             ++memoryCount;
         }
     }
+
     if (memoryCount != RTL_NUMBER_OF(starts) ||
         lengths[0] != 0x1000 || lengths[1] != 0x1000 ||
         lengths[2] != 0x1000 || lengths[3] != 0x1000 ||
-        lengths[4] != 0x40 ||
         starts[1].QuadPart - starts[0].QuadPart != RP1_PWM1_FROM_CLOCKS ||
         starts[2].QuadPart - starts[0].QuadPart != RP1_GPIO2_FROM_CLOCKS ||
-        starts[3].QuadPart - starts[0].QuadPart != RP1_PADS2_FROM_CLOCKS ||
-        starts[4].QuadPart != BCM2712_MAILBOX_PHYSICAL) {
+        starts[3].QuadPart - starts[0].QuadPart != RP1_PADS2_FROM_CLOCKS) {
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
 
@@ -328,29 +313,26 @@ FanEvtPrepareHardware(_In_ WDFDEVICE Device,
     context->PwmLength = lengths[1];
     context->GpioLength = lengths[2];
     context->PadsLength = lengths[3];
-    context->MailboxLength = lengths[4];
-    context->Clocks = MmMapIoSpaceEx(starts[0], lengths[0], PAGE_READWRITE | PAGE_NOCACHE);
-    context->Pwm = MmMapIoSpaceEx(starts[1], lengths[1], PAGE_READWRITE | PAGE_NOCACHE);
-    context->Gpio = MmMapIoSpaceEx(starts[2], lengths[2], PAGE_READWRITE | PAGE_NOCACHE);
-    context->Pads = MmMapIoSpaceEx(starts[3], lengths[3], PAGE_READWRITE | PAGE_NOCACHE);
-    context->Mailbox = MmMapIoSpaceEx(starts[4], lengths[4], PAGE_READWRITE | PAGE_NOCACHE);
+    context->Clocks = MmMapIoSpaceEx(
+        starts[0], lengths[0], PAGE_READWRITE | PAGE_NOCACHE);
+    context->Pwm = MmMapIoSpaceEx(
+        starts[1], lengths[1], PAGE_READWRITE | PAGE_NOCACHE);
+    context->Gpio = MmMapIoSpaceEx(
+        starts[2], lengths[2], PAGE_READWRITE | PAGE_NOCACHE);
+    context->Pads = MmMapIoSpaceEx(
+        starts[3], lengths[3], PAGE_READWRITE | PAGE_NOCACHE);
+
     if (context->Clocks == NULL || context->Pwm == NULL ||
-        context->Gpio == NULL || context->Pads == NULL ||
-        context->Mailbox == NULL) {
+        context->Gpio == NULL || context->Pads == NULL) {
         FanUnmapResources(context);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    high.QuadPart = 0x3fffffff;
-    context->Message = MmAllocateContiguousMemorySpecifyCache(
-        PAGE_SIZE, low, high, boundary, MmNonCached);
-    if (context->Message == NULL) {
-        FanUnmapResources(context);
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-    context->MessagePhysical = MmGetPhysicalAddress(context->Message);
     context->CurrentPercent = 0xff;
     context->TemperatureValid = FALSE;
+    context->TemperatureProviderReady = FALSE;
+    context->TemperatureProviderApiVersion = 0;
+    context->LastTemperatureProviderStatus = STATUS_DEVICE_NOT_READY;
     context->ConsecutiveTemperatureFailures = 0;
     context->OverTemperatureOverride = FALSE;
     context->FailSafeActive = TRUE;
@@ -377,11 +359,8 @@ FanEvtReleaseHardware(_In_ WDFDEVICE Device,
     }
     context->FailSafeActive = TRUE;
     context->TemperatureValid = FALSE;
+    context->TemperatureProviderReady = FALSE;
     context->HardwareReady = FALSE;
-    if (context->Message != NULL) {
-        MmFreeContiguousMemory(context->Message);
-        context->Message = NULL;
-    }
     FanUnmapResources(context);
     WdfWaitLockRelease(context->Lock);
     return STATUS_SUCCESS;
@@ -398,6 +377,8 @@ FanEvtD0Entry(_In_ WDFDEVICE Device,
     WdfWaitLockAcquire(context->Lock, NULL);
     context->FailSafeActive = TRUE;
     context->OverTemperatureOverride = FALSE;
+    context->TemperatureValid = FALSE;
+    context->TemperatureProviderReady = FALSE;
     status = FanSetPercent(context, FAN_FAILSAFE_PERCENT);
     if (NT_SUCCESS(status)) {
         context->TimerEnabled = TRUE;
@@ -418,6 +399,8 @@ FanEvtD0Exit(_In_ WDFDEVICE Device,
     WdfWaitLockAcquire(context->Lock, NULL);
     context->TimerEnabled = FALSE;
     context->FailSafeActive = TRUE;
+    context->TemperatureValid = FALSE;
+    context->TemperatureProviderReady = FALSE;
     if (context->HardwareReady) {
         (void)FanSetPercent(context, FAN_FAILSAFE_PERCENT);
     }
@@ -470,6 +453,12 @@ FanEvtIoDeviceControl(_In_ WDFQUEUE Queue,
                 context->ConsecutiveTemperatureFailures;
             output->FanRpm = 0;
             output->FanRpmValid = 0;
+            output->TemperatureProviderReady =
+                context->TemperatureProviderReady ? 1u : 0u;
+            output->TemperatureProviderApiVersion =
+                context->TemperatureProviderApiVersion;
+            output->LastTemperatureProviderStatus =
+                (ULONG)context->LastTemperatureProviderStatus;
             WdfWaitLockRelease(context->Lock);
             information = sizeof(*output);
         }
@@ -537,6 +526,7 @@ FanEvtDeviceAdd(_In_ WDFDRIVER Driver,
     WDF_IO_QUEUE_CONFIG queueConfig;
     UNICODE_STRING symbolicLink = RTL_CONSTANT_STRING(L"\\DosDevices\\Rpi5Fan");
     NTSTATUS status;
+
     UNREFERENCED_PARAMETER(Driver);
 
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnp);
@@ -559,6 +549,7 @@ FanEvtDeviceAdd(_In_ WDFDRIVER Driver,
     context->ManualPercent = FAN_FAILSAFE_PERCENT;
     context->CurrentPercent = 0xff;
     context->FailSafeActive = TRUE;
+    context->LastTemperatureProviderStatus = STATUS_DEVICE_NOT_READY;
 
     status = WdfWaitLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &context->Lock);
     if (!NT_SUCCESS(status)) {
@@ -589,9 +580,8 @@ FanEvtDeviceAdd(_In_ WDFDRIVER Driver,
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(
         &queueConfig, WdfIoQueueDispatchSequential);
     queueConfig.EvtIoDeviceControl = FanEvtIoDeviceControl;
-    status = WdfIoQueueCreate(
+    return WdfIoQueueCreate(
         device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, WDF_NO_HANDLE);
-    return status;
 }
 
 NTSTATUS
@@ -600,7 +590,7 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject,
 {
     WDF_DRIVER_CONFIG config;
     WDF_DRIVER_CONFIG_INIT(&config, FanEvtDeviceAdd);
-    return WdfDriverCreate(DriverObject, RegistryPath,
-                           WDF_NO_OBJECT_ATTRIBUTES, &config,
-                           WDF_NO_HANDLE);
+    return WdfDriverCreate(
+        DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config,
+        WDF_NO_HANDLE);
 }
