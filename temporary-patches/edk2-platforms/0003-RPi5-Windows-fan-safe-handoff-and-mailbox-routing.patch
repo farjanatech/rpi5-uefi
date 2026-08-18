@@ -37,6 +37,45 @@ diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.
 +#string STR_FAN_SPEED_HELP                                 #language en-US "Set fan PWM from 30 to 100 percent in 5 percent steps while UEFI is running. Windows handoff is always forced to 100 percent."
 +#string STR_FAN_PERSISTENT_WARNING                         #language en-US "Windows handoff is fail-safe: UEFI programs 100% before ExitBootServices. The Windows fan driver may reduce speed only after successful startup."
 
+diff --git a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
+--- a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
++++ b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
+@@ -102,8 +102,34 @@
+         Name (_DSD, Package () {
+           ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+           Package () {
+             Package () { "clock-frequency", PL011_DEBUG_CLOCK_FREQUENCY }
+           }
+         })
+       }
++
++      //
++      // Raspberry Pi 5 property-mailbox temperature provider.
++      // exp.5B keeps this BCM2712 resource under the SOCB producer instead of
++      // mixing it into the RP1 FAN0 device.
++      //
++      Device (TMP0) {
++        Name (_HID, "RPI0010")
++        Name (_UID, 0x0)
++        Name (_CCA, 0x0)
++
++        Method (_CRS, 0x0, Serialized) {
++          Name (RBUF, ResourceTemplate () {
++            QWORDMEMORY_BUF (00, ResourceConsumer)
++          })
++          QWORD_SET (00, 0x000000107C013880, 0x40, 0)
++          Return (RBUF)
++        }
++
++        Name (_DSD, Package () {
++          ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
++          Package () {
++            Package () { "compatible", "raspberrypi,rpi5-property-mailbox-temperature" }
++          }
++        })
++      }
+     } // Device (SOCB)
+
 diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
 --- a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
 +++ b/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi
@@ -46,8 +85,8 @@ diff --git a/Silicon/RaspberryPi/RpiSiliconPkg/Include/Rp1.asi b/Silicon/Raspber
  // Raspberry Pi 5 cooling-fan interface for the experimental Windows ARM64
 -// driver. Resource order is an ABI: clocks, PWM1, GPIO bank 2, pad bank 2,
 -// then the BCM2712 property mailbox.
-+// driver. exp.5A intentionally exposes only the four RP1 fan-control
-+// resources. The BCM2712 property mailbox is not consumed by FAN0.
++// driver. exp.5B exposes only the four RP1 fan-control resources. The BCM2712
++// property mailbox is a separate child under SOCB.
  //
  Device (FAN0) {
    Name (_HID, "RPI000F")
