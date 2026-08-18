@@ -1,0 +1,160 @@
+name: Fan exp.5B pinned release
+
+on:
+  pull_request:
+    branches:
+      - fan-persistent-windows-driver-exp5b
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+env:
+  EXP5B_SOURCE: 6d8607979eaa2789db95758f8618bfe14fa72ebf
+  EXP5B_RELEASE_TARGET: bd03a79307518b15c48c49663758e3e84b4a9b00
+  RPI_FIRMWARE_URL: https://github.com/raspberrypi/firmware/
+  DTB_VERSION: 1e403e23baab5673f0494a200f57cd01287d5b1a
+
+jobs:
+  build-verify-publish:
+    if: ${{ contains(github.event.pull_request.title, '[fan-exp5b-test]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout pinned exp.5B source
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.EXP5B_SOURCE }}
+          fetch-depth: 1
+          submodules: false
+
+      - name: Initialize all required nested firmware submodules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1 --jobs 4 \
+            arm-trusted-firmware edk2 edk2-platforms edk2-non-osi
+          for module in arm-trusted-firmware edk2 edk2-platforms edk2-non-osi; do
+            git -C "${module}" rev-parse HEAD
+          done
+
+      - name: Install build dependencies with bounded retries
+        shell: bash
+        run: |
+          set -euxo pipefail
+          timeout 360s sudo apt-get -o Acquire::Retries=3 update
+          timeout 600s sudo apt-get -o Acquire::Retries=3 install -y \
+            acpica-tools \
+            binutils-aarch64-linux-gnu \
+            build-essential \
+            device-tree-compiler \
+            gettext \
+            git \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            python3 \
+            python3-pyelftools \
+            uuid-dev
+
+      - name: Build Release UEFI from pinned exp.5B source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export EDK2_BUILD_FLAGS="--pcd gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVendor=L${{ github.repository_owner }}"
+          ./build.sh --model 5 --debug 0 --edk2-flags "${EDK2_BUILD_FLAGS}"
+
+      - name: Verify provenance and internal payload hashes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -O -L "${RPI_FIRMWARE_URL}/raw/${DTB_VERSION}/boot/bcm2712-rpi-5-b.dtb"
+          {
+            printf 'rpi5-uefi %s\n' "$(git rev-parse HEAD)"
+            for module in arm-trusted-firmware edk2 edk2-non-osi edk2-platforms; do
+              printf '%s %s\n' "${module}" "$(git -C "${module}" rev-parse HEAD)"
+            done
+          } > SOURCE_REVISIONS.txt
+          grep -Fxq "rpi5-uefi ${EXP5B_SOURCE}" SOURCE_REVISIONS.txt
+          sha256sum RPI_EFI.fd config.txt *.dtb > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Package exp.5B release
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p release-stage release-files
+          cp RPI_EFI.fd config.txt *.dtb SOURCE_REVISIONS.txt SHA256SUMS \
+            THIRD_PARTY_NOTICES.md release-stage/
+          mkdir -p release-stage/LICENSES
+          cp LICENSES/Soulveig-BSD-2-Clause-Patent.txt release-stage/LICENSES/
+          (cd release-stage && zip -q -r ../release-files/RPi5_UEFI_Release_exp5b.zip .)
+
+          cat > release-files/TEST_EXP5B_FIRST.txt <<'EOF'
+          Raspberry Pi 5 fan exp.5B is a UEFI-only ACPI ownership test.
+
+          Keep all RPi5Fan Windows driver packages removed. Do NOT install the
+          exp.4/exp.4.1 driver for this test.
+
+          FAN0 (ACPI\RPI000F\0) must retain exactly four RP1 resources and must
+          not report Code 12.
+
+          TMP0 (expected ACPI\RPI0010\0) is a new child under the BCM2712 SOCB
+          producer. It must own exactly one mailbox resource:
+            0x000000107C013880-0x000000107C0138BF
+
+          The key result is that TMP0 must NOT report Code 12. With no driver it
+          may appear Stopped/Unknown and may carry a missing-driver problem code.
+
+          The physical fan must remain running continuously from the UEFI 100%
+          ExitBootServices handoff.
+          EOF
+
+          cat > release-files/PROVENANCE_exp5b.txt <<EOF
+          Functional source commit: ${EXP5B_SOURCE}
+          Workflow-clean release tag target: ${EXP5B_RELEASE_TARGET}
+          ACPI split gate: passed in GitHub Actions run 32157027540.
+          FAN0: four RP1 resources only.
+          TMP0: RPI0010 child under SOCB with 0x107C013880-0x107C0138BF.
+          UEFI Windows handoff: forced 100% fan retained.
+          Windows fan/temperature driver: intentionally NOT part of this release.
+          EOF
+
+          (cd release-files && sha256sum \
+            RPi5_UEFI_Release_exp5b.zip \
+            TEST_EXP5B_FIRST.txt \
+            PROVENANCE_exp5b.txt \
+            > SHA256SUMS_exp5b.txt)
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Raspberry Pi 5 Active Cooler - experimental 5B
+
+          **UEFI-only ACPI ownership test. Do not install a Windows fan driver yet.**
+
+          exp.5A hardware testing proved that removing the fifth BCM2712 mailbox range from `ACPI\\RPI000F\\0` eliminates its Code 12 condition. exp.5B keeps FAN0 at four RP1 resources and adds `RPI0010` / `TMP0` under the BCM2712 `SOCB` resource producer, consuming only `0x107C013880-0x107C0138BF`.
+
+          The ACPI split gate passed against pinned functional source `6d8607979eaa2789db95758f8618bfe14fa72ebf`, and the UEFI 100% ExitBootServices fan handoff remains intact.
+
+          ### First hardware test
+          Keep all RPi5Fan Windows driver packages removed. Verify that FAN0 remains free of Code 12, that `ACPI\\RPI0010\\0` exists with the single mailbox range, that RPI0010 is also free of Code 12, and that the physical fan keeps running continuously.
+          EOF
+
+      - name: Publish exp.5B prerelease
+        uses: softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: rpi5fan-v0.1.1-exp.5b
+          target_commitish: ${{ env.EXP5B_RELEASE_TARGET }}
+          name: RPi5 Fan Driver v0.1.1 experimental 5B (SOCB mailbox test)
+          body_path: release-notes.md
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+          make_latest: false
+          files: release-files/*
+          fail_on_unmatched_files: true
