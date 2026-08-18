@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release:
-    if: ${{ contains(github.event.head_commit.message, '[republish-exp4-existing]') }}
+    if: ${{ contains(github.event.head_commit.message, '[republish-exp4-clean]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Download verified driver release bundle
@@ -49,7 +49,8 @@ jobs:
           test -f release-stage/driver/SHA256SUMS.txt
           (cd release-stage/driver && sha256sum -c SHA256SUMS.txt)
 
-          mkdir -p driver-check
+          rm -rf driver-check
+          mkdir driver-check
           unzip -q release-stage/driver/RPi5Fan_ARM64_exp4.zip -d driver-check
           grep -Eq 'DriverVer[[:space:]]*=[[:space:]]*08/17/2026,2026\.8\.17\.4' driver-check/Rpi5Fan.inf
           file driver-check/Rpi5Fan.sys | grep -qi 'ARM64'
@@ -76,13 +77,15 @@ jobs:
           (cd release-stage/uefi && zip -q -r ../../release-files/RPi5_UEFI_Release_exp4.1.zip .)
 
           cat > release-files/PROVENANCE_exp4.1.txt <<'EOF'
-          Source commit: 62b0cb81c0758c8609c4406dcba7ca4543b85ef2
+          Validated functional source commit: 62b0cb81c0758c8609c4406dcba7ca4543b85ef2
+          Workflow-clean release tag target: 00267556f1e96e971e4545e7fa5e823e1f456214
+          Release-target difference from validated source: CI workflow metadata only; firmware, driver and GUI source are identical.
           Verified GitHub Actions run: 32033014574
           Driver release artifact digest: sha256:9028d0a6e16433fcb904dedc10cafe4023bb0d63d364356a3edc83476724dd23
           GUI artifact digest: sha256:41bfa6be0893e64700037a59cfd1122fec6345c1d7c38e3405273ea563ea7262
           UEFI Release artifact digest: sha256:347a38124de074099d11745f2db19967c8f3ef786c763bb24b59126924d866e2
           DriverVer: 08/17/2026,2026.8.17.4
-          Republish reason: clean republication after the August 17, 2026 GitHub outage. No functional source changes from exp.4.
+          Republish reason: clean republication after the August 17, 2026 GitHub outage. No functional changes from exp.4.
           EOF
 
           (cd release-files && sha256sum \
@@ -99,9 +102,11 @@ jobs:
           cat > release-notes.md <<'EOF'
           ## Raspberry Pi 5 Active Cooler - experimental 4.1
 
-          Clean republish of experimental 4 after the GitHub outage on August 17, 2026. **No functional firmware, driver, or GUI changes** were made for 4.1.
+          This is a **clean republish of experimental 4** after the GitHub outage on August 17, 2026. There are **no functional firmware, driver, or GUI changes** from exp.4.
 
-          This release uses the recovered successful GitHub Actions artifacts from run `32033014574`, built from source commit `62b0cb81c0758c8609c4406dcba7ca4543b85ef2`.
+          All release payloads come from successful GitHub Actions run `32033014574`, built and validated from functional source commit `62b0cb81c0758c8609c4406dcba7ca4543b85ef2`.
+
+          The Git tag points to workflow-clean equivalent commit `00267556f1e96e971e4545e7fa5e823e1f456214`. That commit differs from the validated source only by restoring/removing CI workflow metadata; the UEFI patches, Windows driver, GUI, installer, and all functional source files are identical. This avoids GitHub's workflow-permission restriction when creating a release whose target modifies `.github/workflows/`.
 
           ### Re-verified before publication
           - fan-curve tests passed
@@ -142,7 +147,7 @@ jobs:
         uses: softprops/action-gh-release@v3.0.2
         with:
           tag_name: rpi5fan-v0.1.1-exp.4.1
-          target_commitish: 62b0cb81c0758c8609c4406dcba7ca4543b85ef2
+          target_commitish: 00267556f1e96e971e4545e7fa5e823e1f456214
           name: RPi5 Fan Driver v0.1.1 experimental 4.1
           body_path: release-notes.md
           draft: false
