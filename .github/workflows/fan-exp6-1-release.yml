@@ -1,0 +1,220 @@
+name: Fan exp.6.1 GUI refresh release
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'WindowsDriver/Rpi5FanGui/**'
+      - 'WindowsDriver/README-exp6.1.md'
+      - '.github/workflows/fan-exp6-1-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BACKEND_TAG: rpi5fan-v0.1.1-exp.6
+  BACKEND_VERIFIED_COMMIT: 259b90d10dddac140801a380504d508eff160b16
+  DRIVER_VERSION: 2026.8.18.6
+  RELEASE_TAG: rpi5fan-v0.1.1-exp.6.1
+  OLD_COMBO_SHA256: 0db810af43f6824ecd07f1ba6b518a3686712a7a641ac29e108df22bec9ad7c9
+  DRIVER_ZIP_SHA256: 9695ab6372ba0b30235ba451d3043aa62e526da9b235fed01d8843d7aa7e2578
+  UEFI_ZIP_SHA256: e831d6c652c8c98921d9b6d529ea8a69591d22d7f9090ef46cffbc63d0f49b91
+
+jobs:
+  build-verify-publish:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Verify GUI-only source scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Select-String -Path 'WindowsDriver/Rpi5FanGui/MainWindow.xaml','WindowsDriver/Rpi5FanGui/MainWindow.xaml.cs' -Pattern 'Actual fan RPM is not reported yet because tachometer input is not implemented in the driver.' -SimpleMatch -Quiet) {
+            throw 'Old RPM/tachometer footer is still present.'
+          }
+          if (-not (Select-String -Path 'WindowsDriver/Rpi5FanGui/MainWindow.xaml' -Pattern 'FanRotateTransform' -SimpleMatch -Quiet)) {
+            throw 'Spinning fan visual is missing.'
+          }
+          if (-not (Test-Path 'WindowsDriver/Rpi5FanGui/Assets/fan.png')) { throw 'fan.png missing' }
+          if (-not (Test-Path 'WindowsDriver/Rpi5FanGui/Assets/fan.ico')) { throw 'fan.ico missing' }
+          if (-not (Select-String -Path 'WindowsDriver/Rpi5FanGui/Rpi5FanGui.csproj' -Pattern '<ApplicationIcon>Assets\fan.ico</ApplicationIcon>' -SimpleMatch -Quiet)) {
+            throw 'Executable icon is not configured.'
+          }
+
+      - name: Publish self-contained ARM64 GUI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet publish WindowsDriver/Rpi5FanGui/Rpi5FanGui.csproj `
+            -c Release `
+            -r win-arm64 `
+            --self-contained true `
+            -o gui-publish
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
+
+      - name: Verify GUI executable architecture and branding
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'gui-publish/Rpi5FanControl.exe'
+          if (-not (Test-Path $exe)) { throw 'Rpi5FanControl.exe missing' }
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0xAA64) {
+            throw ('GUI PE machine is 0x{0:X4}, expected ARM64 0xAA64' -f $machine)
+          }
+          $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+          Write-Host "GUI FileVersion=$($info.FileVersion) ProductVersion=$($info.ProductVersion)"
+          if ($info.FileVersion -ne '0.1.1.61') { throw 'Unexpected GUI file version' }
+
+      - name: Recover exact verified exp.6 backend packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force recovered | Out-Null
+          $base = "https://github.com/${{ github.repository }}/releases/download/$env:BACKEND_TAG"
+          curl.exe --fail --location --retry 3 --output recovered/RPi5FanControl_ARM64_exp6.zip "$base/RPi5FanControl_ARM64_exp6.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download exp.6 combo' }
+          curl.exe --fail --location --retry 3 --output recovered/RPi5Fan_Drivers_ARM64_exp6.zip "$base/RPi5Fan_Drivers_ARM64_exp6.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download exp.6 drivers' }
+          curl.exe --fail --location --retry 3 --output recovered/RPi5_UEFI_Release_exp5b.zip "$base/RPi5_UEFI_Release_exp5b.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download exp.5B UEFI' }
+
+          $checks = @{
+            'recovered/RPi5FanControl_ARM64_exp6.zip' = $env:OLD_COMBO_SHA256
+            'recovered/RPi5Fan_Drivers_ARM64_exp6.zip' = $env:DRIVER_ZIP_SHA256
+            'recovered/RPi5_UEFI_Release_exp5b.zip' = $env:UEFI_ZIP_SHA256
+          }
+          foreach ($entry in $checks.GetEnumerator()) {
+            $actual = (Get-FileHash $entry.Key -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.Value) {
+              throw "Verified backend hash mismatch for $($entry.Key): $actual"
+            }
+            Write-Host "Verified $($entry.Key): $actual"
+          }
+
+      - name: Assemble exp.6.1 combined package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item package -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory package | Out-Null
+          Expand-Archive recovered/RPi5FanControl_ARM64_exp6.zip -DestinationPath package -Force
+
+          Remove-Item package/GUI -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory package/GUI | Out-Null
+          Copy-Item gui-publish/* package/GUI/ -Recurse -Force
+          Copy-Item WindowsDriver/Install.cmd package/Install.cmd -Force
+          Copy-Item WindowsDriver/Install-RPi5FanSuite.ps1 package/Install-RPi5FanSuite.ps1 -Force
+          Copy-Item WindowsDriver/README-exp6.1.md package/README.md -Force
+
+          if (-not (Test-Path package/Drivers/Rpi5Temp/Rpi5Temp.sys)) { throw 'Temperature driver missing from combo' }
+          if (-not (Test-Path package/Drivers/Rpi5Fan/Rpi5Fan.sys)) { throw 'Fan driver missing from combo' }
+          if (-not (Test-Path package/GUI/Rpi5FanControl.exe)) { throw 'New GUI missing from combo' }
+
+          New-Item -ItemType Directory -Force release-files | Out-Null
+          Compress-Archive -Path package/* -DestinationPath release-files/RPi5FanControl_ARM64_exp6.1.zip -CompressionLevel Optimal -Force
+          Copy-Item recovered/RPi5Fan_Drivers_ARM64_exp6.zip release-files/RPi5Fan_Drivers_ARM64_exp6.zip
+          Copy-Item recovered/RPi5_UEFI_Release_exp5b.zip release-files/RPi5_UEFI_Release_exp5b.zip
+
+      - name: Write provenance, install note, and hashes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @"
+          Raspberry Pi 5 Fan Control exp.6.1
+
+          This is a GUI/packaging refresh on the hardware-verified exp.6 backend.
+
+          Included backend:
+          - Exact verified Rpi5Temp/Rpi5Fan driver package from exp.6
+          - Driver version $env:DRIVER_VERSION
+          - Exact exp.5B split-resource UEFI used by the verified exp.6 release
+
+          GUI changes:
+          - Modern color-coded dashboard
+          - Custom fan app/EXE icon
+          - Spinning fan animation following commanded PWM percentage
+          - Removed the old RPM/tachometer explanatory footer
+
+          Install:
+          1. If exp.6 is already working, simply extract the new combo and run the GUI; the drivers/UEFI are unchanged.
+          2. For a fresh install, extract RPi5FanControl_ARM64_exp6.1.zip and run Install.cmd as Administrator.
+          3. If test signing is enabled by the installer, reboot and run Install.cmd again.
+
+          Safety behavior is unchanged from verified exp.6.
+          "@ | Set-Content -Encoding utf8 release-files/INSTALL_EXP6.1_FIRST.txt
+
+          @"
+          release_tag=$env:RELEASE_TAG
+          gui_source_commit=${{ github.sha }}
+          backend_verified_commit=$env:BACKEND_VERIFIED_COMMIT
+          backend_release_tag=$env:BACKEND_TAG
+          driver_version=$env:DRIVER_VERSION
+          backend_driver_zip_sha256=$env:DRIVER_ZIP_SHA256
+          backend_uefi_zip_sha256=$env:UEFI_ZIP_SHA256
+          change_scope=GUI branding, layout, animation, icon, and packaging only
+          "@ | Set-Content -Encoding utf8 release-files/PROVENANCE_exp6.1.txt
+
+          $files = @(
+            'RPi5FanControl_ARM64_exp6.1.zip',
+            'RPi5Fan_Drivers_ARM64_exp6.zip',
+            'RPi5_UEFI_Release_exp5b.zip',
+            'INSTALL_EXP6.1_FIRST.txt',
+            'PROVENANCE_exp6.1.txt'
+          )
+          $lines = foreach ($name in $files) {
+            $hash = (Get-FileHash (Join-Path 'release-files' $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name"
+          }
+          $lines | Set-Content -Encoding ascii release-files/SHA256SUMS_exp6.1.txt
+          Get-Content release-files/SHA256SUMS_exp6.1.txt
+
+      - name: Publish exp.6.1 prerelease
+        uses: softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: RPi5 Fan Control v0.1.1 experimental 6.1 — GUI Refresh
+          prerelease: true
+          draft: false
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          body: |
+            ## Raspberry Pi 5 Fan Control — exp.6.1 GUI Refresh
+
+            exp.6.1 keeps the **hardware-verified exp.6 UEFI + split-driver backend unchanged** and refreshes the Windows 11 ARM64 control application.
+
+            ### GUI improvements
+            - Modern dark, color-coded dashboard.
+            - Custom fan artwork embedded as the application/window icon.
+            - Animated spinning fan whose animation speed follows the commanded PWM percentage.
+            - Cleaner temperature, fan-output, mode, driver, provider, and safety status presentation.
+            - The previous RPM/tachometer explanatory footer has been removed.
+            - Existing controls and CSV logging are retained.
+
+            ### Backend
+            `Rpi5Temp.sys`, `Rpi5Fan.sys`, driver version `2026.8.18.6`, the automatic fan curve, and the fail-safe behavior are unchanged from the hardware-verified exp.6 release. The included UEFI ZIP is the exact validated exp.5B split-resource firmware used by exp.6.
+
+            Automatic temperature control continues in the kernel even when the GUI is not running.
+
+            Recommended download: **RPi5FanControl_ARM64_exp6.1.zip**.
+          files: |
+            release-files/RPi5FanControl_ARM64_exp6.1.zip
+            release-files/RPi5Fan_Drivers_ARM64_exp6.zip
+            release-files/RPi5_UEFI_Release_exp5b.zip
+            release-files/INSTALL_EXP6.1_FIRST.txt
+            release-files/PROVENANCE_exp6.1.txt
+            release-files/SHA256SUMS_exp6.1.txt

@@ -10,5 +10,13 @@
     <AssemblyName>Rpi5FanControl</AssemblyName>
     <RootNamespace>Rpi5FanControl</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\fan.ico</ApplicationIcon>
+    <Version>0.1.1-exp.6.1</Version>
+    <FileVersion>0.1.1.61</FileVersion>
+    <AssemblyVersion>0.1.1.61</AssemblyVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\fan.png" />
+    <Resource Include="Assets\fan.ico" />
+  </ItemGroup>
 </Project>

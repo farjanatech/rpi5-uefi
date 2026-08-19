@@ -2,16 +2,31 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 
 namespace Rpi5FanControl;
 
 public partial class MainWindow : Window
 {
+    private static readonly Brush HealthyBrush = BrushFrom("#52E0A4");
+    private static readonly Brush WarningBrush = BrushFrom("#FFB454");
+    private static readonly Brush DangerBrush = BrushFrom("#FF6B7B");
+    private static readonly Brush MutedBrush = BrushFrom("#7185A4");
+    private static readonly Brush SafetyHealthyBackground = BrushFrom("#15362E");
+    private static readonly Brush SafetyHealthyBorder = BrushFrom("#2E7B68");
+    private static readonly Brush SafetyWarningBackground = BrushFrom("#3A2B16");
+    private static readonly Brush SafetyWarningBorder = BrushFrom("#8C6728");
+    private static readonly Brush SafetyDangerBackground = BrushFrom("#3A1820");
+    private static readonly Brush SafetyDangerBorder = BrushFrom("#8F3545");
+
     private readonly DriverClient _driver = new();
     private readonly DispatcherTimer _timer;
     private readonly string _logDirectory;
     private bool _reportedConnection;
+    private uint? _lastAnimatedPercent;
+    private bool _fanAnimationRunning;
 
     public MainWindow()
     {
@@ -38,8 +53,16 @@ public partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _timer.Stop();
+            StopFanAnimation();
             _driver.Dispose();
         };
+    }
+
+    private static SolidColorBrush BrushFrom(string hex)
+    {
+        var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex));
+        brush.Freeze();
+        return brush;
     }
 
     private void RefreshStatus()
@@ -61,11 +84,20 @@ public partial class MainWindow : Window
         {
             _reportedConnection = false;
             DriverText.Text = "Unavailable";
-            TempProviderText.Text = "Provider: unavailable";
+            DriverText.Foreground = DangerBrush;
+            DriverIndicator.Fill = DangerBrush;
+            TempProviderText.Text = "Unavailable";
+            TempProviderText.Foreground = DangerBrush;
+            TempProviderIndicator.Fill = DangerBrush;
             TemperatureText.Text = "--";
+            TemperatureText.Foreground = MutedBrush;
             FanPercentText.Text = "--";
             ModeText.Text = "--";
-            SafetyText.Text = "Fan driver unavailable. Verify the physical fan is still spinning. UEFI hands Windows a 100% fan state, but an abrupt kernel failure cannot run driver cleanup.";
+            SetConnectionState(false);
+            SetSafetyState(
+                SafetyVisualState.Danger,
+                "Fan driver unavailable. Verify the physical fan is still spinning; the UEFI fail-safe handoff is 100%.");
+            StopFanAnimation();
             AddRecent($"{DateTime.Now:HH:mm:ss} ERROR {ex.Message}");
             TryAppendRawError(ex.Message);
             _driver.Dispose();
@@ -74,46 +106,155 @@ public partial class MainWindow : Window
 
     private void UpdateDashboard(DriverStatus status)
     {
-        DriverText.Text = status.HardwareReady != 0 ? "Ready" : "Loaded";
-        TempProviderText.Text = status.TemperatureProviderReady != 0
-            ? $"Provider: ready (API {status.TemperatureProviderApiVersion})"
-            : $"Provider: unavailable (0x{status.LastTemperatureProviderStatus:X8})";
+        bool hardwareReady = status.HardwareReady != 0;
+        bool providerReady = status.TemperatureProviderReady != 0;
+
+        DriverText.Text = hardwareReady ? "Ready" : "Loaded";
+        DriverText.Foreground = hardwareReady ? HealthyBrush : WarningBrush;
+        DriverIndicator.Fill = hardwareReady ? HealthyBrush : WarningBrush;
+
+        TempProviderText.Text = providerReady
+            ? $"Ready · API {status.TemperatureProviderApiVersion}"
+            : $"Unavailable · 0x{status.LastTemperatureProviderStatus:X8}";
+        TempProviderText.Foreground = providerReady ? HealthyBrush : WarningBrush;
+        TempProviderIndicator.Fill = providerReady ? HealthyBrush : WarningBrush;
+
         TemperatureText.Text = status.TemperatureValid != 0
             ? $"{status.TemperatureMilliCelsius / 1000.0:F1} °C"
             : "--";
+        TemperatureText.Foreground = status.TemperatureValid == 0
+            ? MutedBrush
+            : status.TemperatureMilliCelsius >= 85000u
+                ? DangerBrush
+                : status.TemperatureMilliCelsius >= 70000u
+                    ? WarningBrush
+                    : Brushes.White;
+
         FanPercentText.Text = $"{status.CurrentPercent}%";
         ModeText.Text = status.ControlMode == (uint)FanControlMode.Manual
             ? "Manual"
             : "Automatic";
 
-        if (status.HardwareReady == 0)
+        SetConnectionState(hardwareReady);
+        UpdateFanAnimation(status.CurrentPercent, hardwareReady);
+
+        if (!hardwareReady)
         {
-            SafetyText.Text = "Fan hardware is not ready; Windows has not taken PWM control.";
+            SetSafetyState(SafetyVisualState.Warning,
+                "Fan hardware is not ready; Windows has not taken PWM control.");
         }
-        else if (status.TemperatureProviderReady == 0)
+        else if (!providerReady)
         {
-            SafetyText.Text = $"Temperature provider unavailable — fan forced to 100% (provider status 0x{status.LastTemperatureProviderStatus:X8}).";
+            SetSafetyState(SafetyVisualState.Warning,
+                $"Temperature provider unavailable — fan forced to 100% (0x{status.LastTemperatureProviderStatus:X8}).");
         }
         else if (status.OverTemperatureOverride != 0)
         {
-            SafetyText.Text = "OVER-TEMPERATURE override active — fan forced to 100%.";
+            SetSafetyState(SafetyVisualState.Danger,
+                "OVER-TEMPERATURE override active — fan forced to 100%.");
         }
         else if (status.FailSafeActive != 0 && status.TemperatureValid == 0)
         {
-            SafetyText.Text = $"Temperature fail-safe active — fan forced to 100% (failures: {status.ConsecutiveTemperatureFailures}).";
+            SetSafetyState(SafetyVisualState.Warning,
+                $"Temperature fail-safe active — fan forced to 100% (failures: {status.ConsecutiveTemperatureFailures}).");
         }
         else if (status.FailSafeActive != 0)
         {
-            SafetyText.Text = "Fail-safe active — fan forced to 100%.";
+            SetSafetyState(SafetyVisualState.Warning,
+                "Fail-safe active — fan forced to 100%.");
         }
         else
         {
-            SafetyText.Text = "Normal split-driver control active. The driver will never intentionally command less than 30%.";
+            SetSafetyState(SafetyVisualState.Healthy,
+                "Normal split-driver control active. Automatic temperature control continues without the GUI.");
+        }
+    }
+
+    private void SetConnectionState(bool ready)
+    {
+        if (ready)
+        {
+            ConnectionBadgeText.Text = "Drivers ready";
+            ConnectionBadge.Background = BrushFrom("#193C34");
+            ConnectionBadge.BorderBrush = BrushFrom("#2F8C73");
+            ConnectionIndicator.Fill = HealthyBrush;
+        }
+        else
+        {
+            ConnectionBadgeText.Text = "Driver unavailable";
+            ConnectionBadge.Background = BrushFrom("#3A1820");
+            ConnectionBadge.BorderBrush = BrushFrom("#8F3545");
+            ConnectionIndicator.Fill = DangerBrush;
+        }
+    }
+
+    private void SetSafetyState(SafetyVisualState state, string message)
+    {
+        SafetyText.Text = message;
+        switch (state)
+        {
+            case SafetyVisualState.Healthy:
+                SafetyBorder.Background = SafetyHealthyBackground;
+                SafetyBorder.BorderBrush = SafetyHealthyBorder;
+                SafetyIndicator.Fill = HealthyBrush;
+                break;
+            case SafetyVisualState.Warning:
+                SafetyBorder.Background = SafetyWarningBackground;
+                SafetyBorder.BorderBrush = SafetyWarningBorder;
+                SafetyIndicator.Fill = WarningBrush;
+                break;
+            default:
+                SafetyBorder.Background = SafetyDangerBackground;
+                SafetyBorder.BorderBrush = SafetyDangerBorder;
+                SafetyIndicator.Fill = DangerBrush;
+                break;
+        }
+    }
+
+    private void UpdateFanAnimation(uint percent, bool hardwareReady)
+    {
+        if (!hardwareReady)
+        {
+            StopFanAnimation();
+            return;
         }
 
-        FooterText.Text = status.FanRpmValid != 0
-            ? $"Measured fan speed: {status.FanRpm} RPM"
-            : "Actual fan RPM is not reported yet because tachometer input is not implemented in the driver.";
+        percent = Math.Clamp(percent, 30u, 100u);
+        FanImage.Opacity = 1.0;
+
+        if (_fanAnimationRunning && _lastAnimatedPercent == percent)
+        {
+            return;
+        }
+
+        double normalized = (percent - 30u) / 70.0;
+        double secondsPerTurn = 1.45 - (1.10 * normalized);
+        double currentAngle = FanRotateTransform.Angle;
+
+        var animation = new DoubleAnimation
+        {
+            From = currentAngle,
+            To = currentAngle + 360.0,
+            Duration = TimeSpan.FromSeconds(secondsPerTurn),
+            RepeatBehavior = RepeatBehavior.Forever,
+            FillBehavior = FillBehavior.HoldEnd
+        };
+
+        FanRotateTransform.BeginAnimation(
+            RotateTransform.AngleProperty,
+            animation,
+            HandoffBehavior.SnapshotAndReplace);
+
+        _lastAnimatedPercent = percent;
+        _fanAnimationRunning = true;
+    }
+
+    private void StopFanAnimation()
+    {
+        FanRotateTransform.BeginAnimation(RotateTransform.AngleProperty, null);
+        FanImage.Opacity = 0.38;
+        _fanAnimationRunning = false;
+        _lastAnimatedPercent = null;
     }
 
     private void Automatic_Click(object sender, RoutedEventArgs e)
@@ -247,4 +388,11 @@ public partial class MainWindow : Window
 
     private static string EscapeCsv(string value) =>
         $"\"{value.Replace("\"", "\"\"")}\"";
+
+    private enum SafetyVisualState
+    {
+        Healthy,
+        Warning,
+        Danger
+    }
 }
