@@ -1,0 +1,151 @@
+name: Build Pi5 direct-SDIO Wi-Fi UEFI
+
+on:
+  push:
+    branches:
+      - wifi/direct-sdio-ndis
+    paths:
+      - 'build-wifi-direct-sdio-ndis.sh'
+      - 'temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch'
+      - '.github/workflows/wifi-direct-sdio-ndis.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wifi-direct-sdio-ndis-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASELINE_COMMIT: af4d7d5cd1c54063363ffbd2ec4bcca846619753
+  BASELINE_EDK2_PLATFORMS: c4b5d05de1f2ef633bdb4c175b5c118fcb2666ed
+  RPI_FIRMWARE_URL: https://github.com/raspberrypi/firmware
+  DTB_VERSION: 1e403e23baab5673f0494a200f57cd01287d5b1a
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout direct-SDIO branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Prove fan baseline and change isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$BASELINE_COMMIT" HEAD
+          while IFS= read -r path; do
+            case "$path" in
+              build-wifi-direct-sdio-ndis.sh|\
+              temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch|\
+              .github/workflows/wifi-direct-sdio-ndis.yml)
+                ;;
+              *) echo "Unexpected change outside direct-SDIO scope: $path" >&2; exit 1 ;;
+            esac
+          done < <(git diff --name-only "$BASELINE_COMMIT"..HEAD)
+
+          for path in \
+            build.sh \
+            temporary-patches/edk2-platforms/0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch \
+            temporary-patches/edk2-platforms/0002-RPi5-keep-microSD-powered-during-UEFI.patch \
+            temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch; do
+            git show "$BASELINE_COMMIT:$path" > /tmp/baseline-file
+            cmp -s /tmp/baseline-file "$path" || { echo "Protected baseline changed: $path" >&2; exit 1; }
+            echo "Protected unchanged: $path"
+          done
+
+      - name: Initialize exact pinned firmware submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1 --jobs 4 arm-trusted-firmware edk2 edk2-platforms edk2-non-osi
+          test "$(git -C edk2-platforms rev-parse HEAD)" = "$BASELINE_EDK2_PLATFORMS"
+
+      - name: Verify direct-SDIO architecture patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch='temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch'
+          grep -Fq 'Name (_HID, "RPI5WIFI")' "$patch"
+          ! grep -Fq '+      Name (_CID, Package () { "80860F16"' "$patch"
+          grep -Fq 'leave MAX_50MHZ_MODE' "$patch"
+          grep -Fq 'SDCD_N_TEST' Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c 2>/dev/null || true
+          ! grep -Fq 'Method (_PS0' "$patch"
+          ! grep -Fq 'OperationRegion (S2CF' "$patch"
+          git -C edk2-platforms apply --check "${GITHUB_WORKSPACE}/${patch}"
+          echo 'Direct-SDIO patch applies cleanly and contains no Experiment #7 AML.'
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y acpica-tools binutils-aarch64-linux-gnu build-essential device-tree-compiler gettext git gcc-aarch64-linux-gnu libc6-dev-arm64-cross python3 python3-pyelftools uuid-dev zip
+
+      - name: Build fan-preserving Release UEFI
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x build-wifi-direct-sdio-ndis.sh
+          export EDK2_BUILD_FLAGS="--pcd gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVendor=L${{ github.repository_owner }}"
+          ./build-wifi-direct-sdio-ndis.sh --model 5 --debug 0 --edk2-flags "${EDK2_BUILD_FLAGS}" 2>&1 | tee WIFI_DIRECT_SDIO_NDIS_BUILD.log
+          test -f RPI_EFI.fd
+          git -C edk2-platforms diff --exit-code
+          grep -Fq 'Applied experimental RPi5 fail-safe fan patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log
+          grep -Fq 'Applied RPi5 Windows fan safe-handoff and mailbox-routing patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log
+          grep -Fq 'Applied isolated RPi5 Wi-Fi direct-SDIO NDIS patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log
+
+      - name: Package firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 -o bcm2712-rpi-5-b.dtb "$RPI_FIRMWARE_URL/raw/$DTB_VERSION/boot/bcm2712-rpi-5-b.dtb"
+          {
+            printf 'direct_sdio_branch_commit %s\n' "$(git rev-parse HEAD)"
+            printf 'baseline_master %s\n' "$BASELINE_COMMIT"
+            for module in arm-trusted-firmware edk2 edk2-non-osi edk2-platforms; do
+              printf '%s %s\n' "$module" "$(git -C "$module" rev-parse HEAD)"
+            done
+          } > SOURCE_REVISIONS.txt
+
+          cat > WIFI_DIRECT_SDIO_NDIS_README.txt <<'EOF'
+          Raspberry Pi 5 direct-SDIO CYW43455 UEFI
+          ========================================
+
+          This is the platform half of the direct-SDIO / NDIS-Ethernet design.
+          It is not presented as working Wi-Fi by itself.
+
+          Changes relative to master:
+          - SDIO2 gets ACPI HID RPI5WIFI so Microsoft sdbus does not own it.
+          - Intel/Bay-Trail compatibility IDs are removed from SDIO2.
+          - MAX_50MHZ_MODE vendor strap programming is left untouched.
+          - SDIO2 MMIO, IRQ 306, WL_ON power resource, CQ capability, pin routing,
+            and active-low forced-card-present behavior remain unchanged.
+          - Existing fan implementation and fan patches remain unchanged.
+          - No Experiment #7 _PS0 or SDIO2 AML MMIO OperationRegion is present.
+
+          Use only with the matching RPI5WIFI direct-SDIO Windows driver.
+          Confirm physical fan operation after boot.
+          EOF
+
+          sha256sum RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb SOURCE_REVISIONS.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log > SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt
+          rm -rf wifi-direct-sdio-ndis-package
+          mkdir wifi-direct-sdio-ndis-package
+          cp RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb SOURCE_REVISIONS.txt SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt WIFI_DIRECT_SDIO_NDIS_README.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log wifi-direct-sdio-ndis-package/
+          (cd wifi-direct-sdio-ndis-package && zip -q -r ../RPi5_UEFI_WiFi_DIRECT_SDIO_NDIS.zip .)
+          sha256sum RPi5_UEFI_WiFi_DIRECT_SDIO_NDIS.zip
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RPi5_UEFI_WiFi_DIRECT_SDIO_NDIS
+          path: RPi5_UEFI_WiFi_DIRECT_SDIO_NDIS.zip
+          if-no-files-found: error
+          retention-days: 30
