@@ -1,6 +1,11 @@
 name: Build Wi-Fi SDIO2 diagnostic UEFI
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/wifi-sdio2-diag-controller.yml'
   workflow_dispatch:
 
 permissions:
