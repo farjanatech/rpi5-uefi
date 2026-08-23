@@ -1,7 +1,7 @@
 diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c
 --- a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c
 +++ b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c
-@@ -158,10 +158,11 @@ InitWifiSdioHost (
+@@ -158,11 +158,11 @@ InitWifiSdioHost (
    // Wait for WL_ON to settle.
    gBS->Stall (150000);
  
