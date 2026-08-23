@@ -1,0 +1,11 @@
+name: Build Wi-Fi SDIO2 diagnostic UEFI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-diagnostic:
+    uses: farjanatech/rpi5-uefi/.github/workflows/wifi-sdio2-diag.yml@diag/wifi-sdio2-cqcap-off-exp5b
