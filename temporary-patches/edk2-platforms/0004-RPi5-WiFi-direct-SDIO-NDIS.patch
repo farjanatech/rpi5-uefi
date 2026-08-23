@@ -21,7 +21,7 @@ diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c b/Pl
 diff --git a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
 --- a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
 +++ b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
-@@ -395,8 +395,10 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 2, "RPIFDN", "RPI5    ", 2)
+@@ -395,8 +395,11 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 2, "RPIFDN", "RPI5    ", 2)
      // need to apply most of the workarounds above.
      //
      Device (SDC1) {
@@ -29,8 +29,9 @@ diff --git a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl b/Platform/RaspberryP
 -      Name (_CID, Package () { "80860F16", "VEN_8086&DEV_0F14" })
 +      // Dedicated Pi 5 on-board Wi-Fi SDIO host. Do not advertise the Intel
 +      // Bay Trail compatible IDs here: Windows sdbus must not claim SDIO2.
-+      // The RPI5WIFI NDIS miniport owns the controller and CYW43455 directly.
-+      Name (_HID, "RPI5WIFI")
++      // The RPI0011 NDIS miniport owns the controller and CYW43455 directly.
++      // RPI000F and RPI0010 are reserved by this firmware for fan/temperature.
++      Name (_HID, "RPI0011")
        Name (_UID, 0x1)
        Name (_CCA, 0x0)
        Name (_PR0, Package () { WLPW })

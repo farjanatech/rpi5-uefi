@@ -74,7 +74,8 @@ jobs:
         run: |
           set -euo pipefail
           patch='temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch'
-          grep -Fq 'Name (_HID, "RPI5WIFI")' "$patch"
+          grep -Fq 'Name (_HID, "RPI0011")' "$patch"
+          ! grep -Fq 'Name (_HID, "RPI5WIFI")' "$patch"
           ! grep -Fq '+      Name (_CID, Package () { "80860F16"' "$patch"
           grep -Fq 'leave MAX_50MHZ_MODE' "$patch"
           ! grep -Fq 'Method (_PS0' "$patch"
@@ -123,7 +124,7 @@ jobs:
           It is not presented as working Wi-Fi by itself.
 
           Changes relative to master:
-          - SDIO2 gets ACPI HID RPI5WIFI so Microsoft sdbus does not own it.
+          - SDIO2 gets ACPI HID RPI0011 so Microsoft sdbus does not own it.
           - Intel/Bay-Trail compatibility IDs are removed from SDIO2.
           - MAX_50MHZ_MODE vendor strap programming is left untouched.
           - SDIO2 MMIO, IRQ 306, WL_ON power resource, CQ capability, pin routing,
