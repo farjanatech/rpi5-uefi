@@ -1,0 +1,36 @@
+diff --git a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c
+--- a/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c
++++ b/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c
+@@ -158,10 +158,11 @@ InitWifiSdioHost (
+   // Wait for WL_ON to settle.
+   gBS->Stall (150000);
+ 
+-  // 50 MHz strap override
+-  Reg = MmioRead32 (BCM2712_BRCMSTB_SDIO2_CFG_BASE + SDIO2_CFG_MAX_50MHZ_MODE);
+-  Reg &= ~SDIO2_CFG_MAX_50MHZ_MODE_ENABLE;
+-  Reg |= SDIO2_CFG_MAX_50MHZ_MODE_STRAP_OVERRIDE;
+-  MmioWrite32 (BCM2712_BRCMSTB_SDIO2_CFG_BASE + SDIO2_CFG_MAX_50MHZ_MODE, Reg);
++  // Windows direct-SDIO path: leave MAX_50MHZ_MODE at the hardware/firmware
++  // reset value. This is the only SDIO2 host configuration known to let the
++  // controller start reliably on the Pi 5 Windows ARM64 platform. The custom
++  // driver owns SDHCI directly; CQ_CAPABILITY, pin routing, WL_ON and the
++  // active-low forced-card-present state remain at the verified baseline.
+ 
+   // Base clock (SDC1 Caps): FMUL = 3, 200 MHz
+   Reg = (3U << SDIO2_CFG_CQ_CAPABILITY_FMUL_SHIFT) | SDIO2_BASE_CLOCK_MHZ;
+diff --git a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
+--- a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
++++ b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
+@@ -395,8 +395,10 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 2, "RPIFDN", "RPI5    ", 2)
+     // need to apply most of the workarounds above.
+     //
+     Device (SDC1) {
+-      Name (_HID, "BRCM5D12")
+-      Name (_CID, Package () { "80860F16", "VEN_8086&DEV_0F14" })
++      // Dedicated Pi 5 on-board Wi-Fi SDIO host. Do not advertise the Intel
++      // Bay Trail compatible IDs here: Windows sdbus must not claim SDIO2.
++      // The RPI5WIFI NDIS miniport owns the controller and CYW43455 directly.
++      Name (_HID, "RPI5WIFI")
+       Name (_UID, 0x1)
+       Name (_CCA, 0x0)
+       Name (_PR0, Package () { WLPW })
