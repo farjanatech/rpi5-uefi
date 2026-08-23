@@ -1,0 +1,16 @@
+name: Build Wi-Fi SDIO2 Experiment 6 diagnostic UEFI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/wifi-sdio2-wlpw-hold-high-strap-baseline-diag-controller.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-diagnostic:
+    uses: farjanatech/rpi5-uefi/.github/workflows/wifi-sdio2-wlpw-hold-high-strap-baseline-diag.yml@diag/wifi-sdio2-wlpw-hold-high-strap-baseline-exp5b
