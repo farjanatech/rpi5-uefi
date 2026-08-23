@@ -1,0 +1,11 @@
+name: Build Wi-Fi SDIO2 50MHz plus CQ diagnostic UEFI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-diagnostic:
+    uses: farjanatech/rpi5-uefi/.github/workflows/wifi-sdio2-50mhz-cqcap-diag.yml@diag/wifi-sdio2-50mhz-cqcap-off-exp5b
