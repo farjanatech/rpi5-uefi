@@ -132,7 +132,7 @@ jobs:
           - Existing fan implementation and fan patches remain unchanged.
           - No Experiment #7 _PS0 or SDIO2 AML MMIO OperationRegion is present.
 
-          Use only with the matching RPI5WIFI direct-SDIO Windows driver.
+          Use only with the matching ACPI RPI0011 direct-SDIO Windows driver.
           Confirm physical fan operation after boot.
           EOF
 
