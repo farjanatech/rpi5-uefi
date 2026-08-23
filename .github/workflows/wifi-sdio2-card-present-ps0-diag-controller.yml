@@ -1,0 +1,16 @@
+name: Build Wi-Fi SDIO2 Experiment 7 diagnostic UEFI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/wifi-sdio2-card-present-ps0-diag-controller.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-diagnostic:
+    uses: farjanatech/rpi5-uefi/.github/workflows/wifi-sdio2-card-present-ps0-diag.yml@diag/wifi-sdio2-card-present-ps0-exp5b
