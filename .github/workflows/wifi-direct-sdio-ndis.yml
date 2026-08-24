@@ -23,6 +23,7 @@ env:
   BASELINE_EDK2_PLATFORMS: c4b5d05de1f2ef633bdb4c175b5c118fcb2666ed
   RPI_FIRMWARE_URL: https://github.com/raspberrypi/firmware
   DTB_VERSION: 1e403e23baab5673f0494a200f57cd01287d5b1a
+  RPI_LINUX_PINCTRL_SOURCE: 65495647821026e14223095d1b0124aa3d502dec
 
 jobs:
   build-release:
@@ -78,10 +79,15 @@ jobs:
           ! grep -Fq 'Name (_HID, "RPI5WIFI")' "$patch"
           ! grep -Fq '+      Name (_CID, Package () { "80860F16"' "$patch"
           grep -Fq 'leave MAX_50MHZ_MODE' "$patch"
+          grep -Fq 'brcm,bcm2712c0-pinctrl' "$patch"
+          grep -Fq 'brcm,bcm2712d0-pinctrl' "$patch"
+          grep -Fq '{ 0x0C, 24, 4, 0x24, 14, 0 }' "$patch"
+          grep -Fq '{ 0x08, 24, 1, 0x14, 24, 0 }' "$patch"
+          grep -Fq 'FdtPlatformGetBase' "$patch"
           ! grep -Fq 'Method (_PS0' "$patch"
           ! grep -Fq 'OperationRegion (S2CF' "$patch"
           git -C edk2-platforms apply --check "${GITHUB_WORKSPACE}/${patch}"
-          echo 'Direct-SDIO patch applies cleanly and contains no Experiment #7 AML.'
+          echo 'Direct-SDIO patch applies cleanly, supports C0/D0 pinctrl, and contains no Experiment #7 AML.'
 
       - name: Install build dependencies
         shell: bash
@@ -111,6 +117,7 @@ jobs:
           {
             printf 'direct_sdio_branch_commit %s\n' "$(git rev-parse HEAD)"
             printf 'baseline_master %s\n' "$BASELINE_COMMIT"
+            printf 'raspberrypi_linux_pinctrl_source %s\n' "$RPI_LINUX_PINCTRL_SOURCE"
             for module in arm-trusted-firmware edk2 edk2-non-osi edk2-platforms; do
               printf '%s %s\n' "$module" "$(git -C "$module" rev-parse HEAD)"
             done
@@ -127,8 +134,11 @@ jobs:
           - SDIO2 gets ACPI HID RPI0011 so Microsoft sdbus does not own it.
           - Intel/Bay-Trail compatibility IDs are removed from SDIO2.
           - MAX_50MHZ_MODE vendor strap programming is left untouched.
-          - SDIO2 MMIO, IRQ 306, WL_ON power resource, CQ capability, pin routing,
-            and active-low forced-card-present behavior remain unchanged.
+          - SDIO2 pin mux and pulls are selected at boot for BCM2712 C0 or D0
+            from the firmware-adjusted device tree. The layouts match Raspberry
+            Pi Linux pinctrl source commit 65495647821026e14223095d1b0124aa3d502dec.
+          - SDIO2 MMIO, IRQ 306, WL_ON power resource, CQ capability and
+            active-low forced-card-present behavior remain unchanged.
           - Existing fan implementation and fan patches remain unchanged.
           - No Experiment #7 _PS0 or SDIO2 AML MMIO OperationRegion is present.
 
