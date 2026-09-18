@@ -3,6 +3,9 @@ on:
   push:
     tags:
       - 'rpi5-*'
+      # Direct-SDIO packages use their own build wrapper and release process.
+      # The generic build omits patch 0004 and must not overwrite those releases.
+      - '!rpi5-wifi-direct-sdio-*'
 
 jobs:
   build_for_release:

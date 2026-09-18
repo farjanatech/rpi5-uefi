@@ -9,6 +9,7 @@ on:
       - 'temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch'
       - '.github/workflows/wifi-direct-sdio-ndis.yml'
       - 'tests/wifi_pinctrl_test.py'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
@@ -49,6 +50,7 @@ jobs:
               build-wifi-direct-sdio-ndis.sh|\
               temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch|\
               tests/wifi_pinctrl_test.py|\
+              .github/workflows/release.yml|\
               .github/workflows/wifi-direct-sdio-ndis.yml)
                 ;;
               *) echo "Unexpected change outside direct-SDIO scope: $path" >&2; exit 1 ;;
