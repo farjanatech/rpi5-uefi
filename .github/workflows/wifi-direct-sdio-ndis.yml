@@ -8,6 +8,7 @@ on:
       - 'build-wifi-direct-sdio-ndis.sh'
       - 'temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch'
       - '.github/workflows/wifi-direct-sdio-ndis.yml'
+      - 'tests/wifi_pinctrl_test.py'
   workflow_dispatch:
 
 permissions:
@@ -23,6 +24,7 @@ env:
   BASELINE_EDK2_PLATFORMS: c4b5d05de1f2ef633bdb4c175b5c118fcb2666ed
   RPI_FIRMWARE_URL: https://github.com/raspberrypi/firmware
   DTB_VERSION: 1e403e23baab5673f0494a200f57cd01287d5b1a
+  D0_OVERLAY_VERSION: bead686816848038563a542dc854346ab13253a2
   RPI_LINUX_PINCTRL_SOURCE: 65495647821026e14223095d1b0124aa3d502dec
 
 jobs:
@@ -46,6 +48,7 @@ jobs:
             case "$path" in
               build-wifi-direct-sdio-ndis.sh|\
               temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch|\
+              tests/wifi_pinctrl_test.py|\
               .github/workflows/wifi-direct-sdio-ndis.yml)
                 ;;
               *) echo "Unexpected change outside direct-SDIO scope: $path" >&2; exit 1 ;;
@@ -94,7 +97,20 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y acpica-tools binutils-aarch64-linux-gnu build-essential device-tree-compiler gettext git gcc-aarch64-linux-gnu libc6-dev-arm64-cross python3 python3-pyelftools uuid-dev zip
+          sudo apt-get -o Acquire::Retries=3 install -y acpica-tools binutils-aarch64-linux-gnu build-essential device-tree-compiler libfdt-dev gettext git gcc-aarch64-linux-gnu libc6-dev-arm64-cross python3 python3-pyelftools uuid-dev zip
+
+      - name: Test actual pinctrl detector with packaged device trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p overlays
+          curl --fail --location --retry 3 -o bcm2712-rpi-5-b.dtb "$RPI_FIRMWARE_URL/raw/$DTB_VERSION/boot/bcm2712-rpi-5-b.dtb"
+          curl --fail --location --retry 3 -o overlays/bcm2712d0.dtbo "$RPI_FIRMWARE_URL/raw/$D0_OVERLAY_VERSION/boot/overlays/bcm2712d0.dtbo"
+          fdtoverlay -i bcm2712-rpi-5-b.dtb -o /tmp/wifi-d0.dtb overlays/bcm2712d0.dtbo
+          patch="${GITHUB_WORKSPACE}/temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch"
+          git -C edk2-platforms apply "$patch"
+          trap 'git -C edk2-platforms apply --reverse "$patch"' EXIT
+          python3 tests/wifi_pinctrl_test.py edk2-platforms/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c bcm2712-rpi-5-b.dtb /tmp/wifi-d0.dtb
 
       - name: Build fan-preserving Release UEFI
         shell: bash
@@ -118,6 +134,7 @@ jobs:
             printf 'direct_sdio_branch_commit %s\n' "$(git rev-parse HEAD)"
             printf 'baseline_master %s\n' "$BASELINE_COMMIT"
             printf 'raspberrypi_linux_pinctrl_source %s\n' "$RPI_LINUX_PINCTRL_SOURCE"
+            printf 'raspberrypi_d0_overlay_source %s\n' "$D0_OVERLAY_VERSION"
             for module in arm-trusted-firmware edk2 edk2-non-osi edk2-platforms; do
               printf '%s %s\n' "$module" "$(git -C "$module" rev-parse HEAD)"
             done
@@ -141,15 +158,21 @@ jobs:
             active-low forced-card-present behavior remain unchanged.
           - Existing fan implementation and fan patches remain unchanged.
           - No Experiment #7 _PS0 or SDIO2 AML MMIO OperationRegion is present.
+          - Legacy brcm,bcm2712-pinctrl is recognized as C0, matching Linux.
+          - Includes overlays/bcm2712d0.dtbo for firmware selection on D0 boards.
+          - The actual C detector is tested against both packaged device trees.
+          - Unknown/missing device trees skip SDIO2 configuration instead of
+            guessing a silicon layout.
 
           Use only with the matching ACPI RPI0011 direct-SDIO Windows driver.
           Confirm physical fan operation after boot.
           EOF
 
-          sha256sum RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb SOURCE_REVISIONS.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log > SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt
+          sha256sum RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb overlays/bcm2712d0.dtbo SOURCE_REVISIONS.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log > SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt
           rm -rf wifi-direct-sdio-ndis-package
           mkdir wifi-direct-sdio-ndis-package
           cp RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb SOURCE_REVISIONS.txt SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt WIFI_DIRECT_SDIO_NDIS_README.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log wifi-direct-sdio-ndis-package/
+          cp -r overlays wifi-direct-sdio-ndis-package/
           (cd wifi-direct-sdio-ndis-package && zip -q -r ../RPi5_UEFI_WiFi_DIRECT_SDIO_NDIS.zip .)
           sha256sum RPi5_UEFI_WiFi_DIRECT_SDIO_NDIS.zip
 
