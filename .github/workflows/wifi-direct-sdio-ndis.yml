@@ -7,8 +7,11 @@ on:
     paths:
       - 'build-wifi-direct-sdio-ndis.sh'
       - 'temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch'
+      - 'temporary-patches/edk2-platforms/0005-RPi5-RTC-and-settings-persistence.patch'
       - '.github/workflows/wifi-direct-sdio-ndis.yml'
       - 'tests/wifi_pinctrl_test.py'
+      - 'tests/rtc_settings_test.py'
+      - 'docs/RTC-SETTINGS-exp0.4.md'
       - '.github/workflows/release.yml'
   workflow_dispatch:
 
@@ -49,7 +52,10 @@ jobs:
             case "$path" in
               build-wifi-direct-sdio-ndis.sh|\
               temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch|\
+              temporary-patches/edk2-platforms/0005-RPi5-RTC-and-settings-persistence.patch|\
               tests/wifi_pinctrl_test.py|\
+              tests/rtc_settings_test.py|\
+              docs/RTC-SETTINGS-exp0.4.md|\
               .github/workflows/release.yml|\
               .github/workflows/wifi-direct-sdio-ndis.yml)
                 ;;
@@ -66,6 +72,10 @@ jobs:
             cmp -s /tmp/baseline-file "$path" || { echo "Protected baseline changed: $path" >&2; exit 1; }
             echo "Protected unchanged: $path"
           done
+          # Settings/RTC work must not change the hardware-validated SDIO path.
+          git diff --exit-code bda4c47626ad922229dbefd7175b650562a0a64f -- \
+            temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch \
+            config.txt .gitmodules edk2 edk2-platforms arm-trusted-firmware edk2-non-osi
 
       - name: Initialize exact pinned firmware submodules
         shell: bash
@@ -114,6 +124,16 @@ jobs:
           trap 'git -C edk2-platforms apply --reverse "$patch"' EXIT
           python3 tests/wifi_pinctrl_test.py edk2-platforms/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c bcm2712-rpi-5-b.dtb /tmp/wifi-d0.dtb
 
+      - name: Test RTC and settings persistence with injected faults
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch="${GITHUB_WORKSPACE}/temporary-patches/edk2-platforms/0005-RPi5-RTC-and-settings-persistence.patch"
+          git -C edk2-platforms apply --check "$patch"
+          git -C edk2-platforms apply "$patch"
+          trap 'git -C edk2-platforms apply --reverse "$patch"' EXIT
+          python3 tests/rtc_settings_test.py | tee RTC_SETTINGS_TESTS.log
+
       - name: Build fan-preserving Release UEFI
         shell: bash
         run: |
@@ -126,6 +146,7 @@ jobs:
           grep -Fq 'Applied experimental RPi5 fail-safe fan patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log
           grep -Fq 'Applied RPi5 Windows fan safe-handoff and mailbox-routing patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log
           grep -Fq 'Applied isolated RPi5 Wi-Fi direct-SDIO NDIS patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log
+          grep -Fq 'Applied isolated RPi5 RTC and settings persistence patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log
 
       - name: Package firmware
         shell: bash
@@ -170,10 +191,10 @@ jobs:
           Confirm physical fan operation after boot.
           EOF
 
-          sha256sum RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb overlays/bcm2712d0.dtbo SOURCE_REVISIONS.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log > SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt
-          rm -rf wifi-direct-sdio-ndis-package
+          cp docs/RTC-SETTINGS-exp0.4.md RTC-SETTINGS-exp0.4.md
+          sha256sum RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb overlays/bcm2712d0.dtbo SOURCE_REVISIONS.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log RTC_SETTINGS_TESTS.log RTC-SETTINGS-exp0.4.md WIFI_DIRECT_SDIO_NDIS_README.txt > SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt
           mkdir wifi-direct-sdio-ndis-package
-          cp RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb SOURCE_REVISIONS.txt SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt WIFI_DIRECT_SDIO_NDIS_README.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log wifi-direct-sdio-ndis-package/
+          cp RPI_EFI.fd config.txt bcm2712-rpi-5-b.dtb SOURCE_REVISIONS.txt SHA256SUMS_WIFI_DIRECT_SDIO_NDIS.txt WIFI_DIRECT_SDIO_NDIS_README.txt WIFI_DIRECT_SDIO_NDIS_BUILD.log RTC_SETTINGS_TESTS.log RTC-SETTINGS-exp0.4.md wifi-direct-sdio-ndis-package/
           cp -r overlays wifi-direct-sdio-ndis-package/
           (cd wifi-direct-sdio-ndis-package && zip -q -r ../RPi5_UEFI_WiFi_DIRECT_SDIO_NDIS.zip .)
           sha256sum RPi5_UEFI_WiFi_DIRECT_SDIO_NDIS.zip

@@ -4,8 +4,14 @@ set -euo pipefail
 WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WIFI_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch"
 WIFI_PATCH_APPLIED=0
+SETTINGS_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/0005-RPi5-RTC-and-settings-persistence.patch"
+SETTINGS_PATCH_APPLIED=0
 
 restore_wifi_patch() {
+    if [[ "${SETTINGS_PATCH_APPLIED}" -eq 1 ]]; then
+        git -C "${WORKSPACE}/edk2-platforms" apply --reverse "${SETTINGS_PATCH}"
+        echo "Restored RTC and settings persistence patch"
+    fi
     if [[ "${WIFI_PATCH_APPLIED}" -eq 1 ]]; then
         git -C "${WORKSPACE}/edk2-platforms" apply --reverse "${WIFI_PATCH}"
         echo "Restored direct-SDIO Wi-Fi patch"
@@ -28,6 +34,11 @@ else
     git -C "${WORKSPACE}/edk2-platforms" apply --check --verbose "${WIFI_PATCH}" >&2 || true
     exit 1
 fi
+
+git -C "${WORKSPACE}/edk2-platforms" apply --check "${SETTINGS_PATCH}"
+git -C "${WORKSPACE}/edk2-platforms" apply "${SETTINGS_PATCH}"
+SETTINGS_PATCH_APPLIED=1
+echo "Applied isolated RPi5 RTC and settings persistence patch"
 
 exec_status=0
 "${WORKSPACE}/build.sh" "$@" || exec_status=$?

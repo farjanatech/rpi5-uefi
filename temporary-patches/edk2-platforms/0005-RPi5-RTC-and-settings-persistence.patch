@@ -1,0 +1,1107 @@
+diff --git a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
+index 3bcd79428..0466a939c 100644
+--- a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
++++ b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
+@@ -7,7 +7,42 @@
+  *
+  **/
+ 
+-#include "VarBlockService.h"
++#include "VarBlockService.h"
++#include <Library/BaseMemoryLib.h>
++
++// Compare in bounded chunks, without allocating during reset-time saving.
++EFI_STATUS
++FileVerify (
++  IN EFI_FILE_PROTOCOL *File,
++  IN UINTN             Offset,
++  IN UINTN             Buffer,
++  IN UINTN             Size
++  )
++{
++  EFI_STATUS Status;
++  UINT8      ReadBuffer[4096];
++  UINTN      Count;
++  UINTN      Requested;
++
++  Status = File->SetPosition (File, Offset);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++  while (Size != 0) {
++    Requested = MIN (Size, sizeof (ReadBuffer));
++    Count = Requested;
++    Status = File->Read (File, &Count, ReadBuffer);
++    if (EFI_ERROR (Status)) {
++      return Status;
++    }
++    if (Count != Requested || CompareMem (ReadBuffer, (VOID *)Buffer, Count) != 0) {
++      return EFI_DEVICE_ERROR;
++    }
++    Size -= Count;
++    Buffer += Count;
++  }
++  return EFI_SUCCESS;
++}
+ 
+ 
+ EFI_STATUS
+@@ -17,26 +52,36 @@ FileWrite (
+   IN UINTN Buffer,
+   IN UINTN Size
+   )
+-{
+-  EFI_STATUS Status;
+-
+-  Status = File->SetPosition (File, Offset);
+-  ASSERT_EFI_ERROR (Status);
+-  if (!EFI_ERROR (Status)) {
+-    Status = File->Write (File, &Size, (VOID*)Buffer);
+-    ASSERT_EFI_ERROR (Status);
+-  }
+-  return Status;
+-}
++{
++  EFI_STATUS Status;
++  UINTN      Written;
++
++  Status = File->SetPosition (File, Offset);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++  Written = Size;
++  Status = File->Write (File, &Written, (VOID*)Buffer);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++  if (Written != Size) {
++    return EFI_DEVICE_ERROR;
++  }
++  Status = File->Flush (File);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++  return FileVerify (File, Offset, Buffer, Size);
++}
+ 
+ 
+-VOID
+-FileClose (
++EFI_STATUS
++FileClose (
+   IN  EFI_FILE_PROTOCOL *File
+   )
+ {
+-  File->Flush (File);
+-  File->Close (File);
++  return File->Close (File);
+ }
+ 
+ 
+@@ -83,8 +128,14 @@ FileOpen (
+                      Volume,
+                      &Root
+                    );
+-  ASSERT_EFI_ERROR (Status);
+-  ASSERT (Root != NULL);
++  ASSERT_EFI_ERROR (Status);
++  ASSERT (Root != NULL);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++  if (Root == NULL) {
++    return EFI_DEVICE_ERROR;
++  }
+ 
+   //
+   // Open file
+@@ -116,7 +167,8 @@ CheckStore (
+ {
+   EFI_STATUS Status;
+   EFI_BLOCK_IO_PROTOCOL *BlkIo;
+-  EFI_FILE_PROTOCOL *File;
++  EFI_FILE_PROTOCOL *File;
++  UINT64 FileSize;
+ 
+   *Device = NULL;
+   Status = gBS->HandleProtocol (
+@@ -146,12 +198,33 @@ CheckStore (
+     goto ErrHandle;
+   }
+ 
+-  /* We found it! Maybe do more checks...? */
+-
+-  FileClose (File);
+-  *Device = DuplicateDevicePath (DevicePathFromHandle (SimpleFileSystemHandle));
+-
+-  ASSERT (*Device != NULL);
++  // A same-named file on another disk is not enough. Match the loaded firmware
++  // volume and its original variable store before selecting a writable target.
++  Status = File->SetPosition (File, MAX_UINT64);
++  if (!EFI_ERROR (Status)) {
++    Status = File->GetPosition (File, &FileSize);
++  }
++  if (!EFI_ERROR (Status) && FileSize != FixedPcdGet32 (PcdFdSize)) {
++    Status = EFI_VOLUME_CORRUPTED;
++  }
++  if (!EFI_ERROR (Status)) {
++    Status = FileVerify (File,
++               (UINTN)(FixedPcdGet64 (PcdFvBaseAddress) - FixedPcdGet64 (PcdFdBaseAddress)),
++               (UINTN)FixedPcdGet64 (PcdFvBaseAddress), FixedPcdGet32 (PcdFvSize));
++  }
++  if (!EFI_ERROR (Status)) {
++    Status = VerifyBootVariableStore (File);
++  }
++  FileClose (File);
++  if (EFI_ERROR (Status)) {
++    goto ErrHandle;
++  }
++  *Device = DuplicateDevicePath (DevicePathFromHandle (SimpleFileSystemHandle));
++
++  ASSERT (*Device != NULL);
++  if (*Device == NULL) {
++    Status = EFI_OUT_OF_RESOURCES;
++  }
+ 
+ ErrHandle:
+   return Status;
+diff --git a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockService.c b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockService.c
+index 572309439..c38ca0688 100644
+--- a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockService.c
++++ b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockService.c
+@@ -93,7 +93,8 @@ VarStoreWrite (
+   IN     UINT8 *Buffer
+   )
+ {
+-  CopyMem ((VOID*)Address, Buffer, *NumBytes);
++  CopyMem ((VOID*)Address, Buffer, *NumBytes);
++  mFvInstance->Generation++;
+   mFvInstance->Dirty = TRUE;
+ 
+   return EFI_SUCCESS;
+@@ -106,7 +107,8 @@ VarStoreErase (
+   IN UINTN LbaLength
+   )
+ {
+-  SetMem ((VOID*)Address, LbaLength, 0xff);
++  SetMem ((VOID*)Address, LbaLength, 0xff);
++  mFvInstance->Generation++;
+   mFvInstance->Dirty = TRUE;
+ 
+   return EFI_SUCCESS;
+@@ -846,7 +848,13 @@ FvbInitialize (
+   /*
+    * Should I parse config.txt instead and find the real name?
+    */
+-  mFvInstance->MappedFile = L"RPI_EFI.FD";
++  mFvInstance->MappedFile = L"RPI_EFI.FD";
++
++  // Capture before initialization or variable services modify the RAM image.
++  Status = CaptureBootVariableStore ();
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
+ 
+   Status = ValidateFvHeader (mFvInstance->VolumeHeader);
+   if (!EFI_ERROR (Status)) {
+diff --git a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockService.h b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockService.h
+index b65c26453..2bc884c8d 100644
+--- a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockService.h
++++ b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockService.h
+@@ -32,7 +32,8 @@ typedef struct {
+   UINTN                      NumOfBlocks;
+   EFI_DEVICE_PATH_PROTOCOL   *Device;
+   CHAR16                     *MappedFile;
+-  BOOLEAN                    Dirty;
++  BOOLEAN                    Dirty;
++  UINTN                      Generation;
+ } EFI_FW_VOL_INSTANCE;
+ 
+ extern EFI_FW_VOL_INSTANCE *mFvInstance;
+@@ -203,9 +204,23 @@ FileOpen (
+   IN  UINT64 OpenMode
+   );
+ 
+-VOID
+-FileClose (
++EFI_STATUS
++FileClose (
+   IN  EFI_FILE_PROTOCOL *File
+-  );
++  );
++
++EFI_STATUS
++FileVerify (
++  IN EFI_FILE_PROTOCOL *File,
++  IN UINTN             Offset,
++  IN UINTN             Buffer,
++  IN UINTN             Size
++  );
++
++EFI_STATUS
++CaptureBootVariableStore (VOID);
++
++EFI_STATUS
++VerifyBootVariableStore (IN EFI_FILE_PROTOCOL *File);
+ 
+ #endif
+diff --git a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockServiceDxe.c b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockServiceDxe.c
+index bc8ab2270..7b3ce15db 100644
+--- a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockServiceDxe.c
++++ b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockServiceDxe.c
+@@ -10,7 +10,8 @@
+ 
+ #include "VarBlockService.h"
+ 
+-#include <Protocol/ResetNotification.h>
++#include <Protocol/ResetNotification.h>
++#include <Library/MemoryAllocationLib.h>
+ 
+ //
+ // Minimum delay to enact before reset, when variables are dirty (in μs).
+@@ -24,7 +25,38 @@
+ #define PLATFORM_RESET_DELAY    3500000
+ #endif
+ 
+-VOID *mSFSRegistration;
++VOID *mSFSRegistration;
++STATIC VOID     *mBootVariableStore;
++STATIC BOOLEAN  mBootServicesGone;
++STATIC BOOLEAN  mSaving;
++STATIC BOOLEAN  mSaveErrorShown;
++
++EFI_STATUS
++CaptureBootVariableStore (VOID)
++{
++  mBootVariableStore = AllocateCopyPool (mFvInstance->FvLength, (VOID *)mFvInstance->FvBase);
++  return mBootVariableStore == NULL ? EFI_OUT_OF_RESOURCES : EFI_SUCCESS;
++}
++
++EFI_STATUS
++VerifyBootVariableStore (IN EFI_FILE_PROTOCOL *File)
++{
++  if (mBootVariableStore == NULL) {
++    return EFI_NOT_READY;
++  }
++  return FileVerify (File, mFvInstance->Offset, (UINTN)mBootVariableStore, mFvInstance->FvLength);
++}
++
++STATIC
++VOID
++ReportSaveFailure (VOID)
++{
++  if (!mSaveErrorShown && gST->ConOut != NULL) {
++    gST->ConOut->OutputString (gST->ConOut,
++      L"\r\nWARNING: UEFI settings are not saved. Keep the firmware boot media connected and writable.\r\n");
++    mSaveErrorShown = TRUE;
++  }
++}
+ 
+ 
+ VOID
+@@ -139,9 +171,10 @@ EFI_STATUS
+ DoDump (
+   IN EFI_DEVICE_PATH_PROTOCOL *Device
+   )
+-{
+-  EFI_STATUS Status;
+-  EFI_FILE_PROTOCOL *File;
++{
++  EFI_STATUS Status;
++  EFI_STATUS CloseStatus;
++  EFI_FILE_PROTOCOL *File;
+ 
+   Status = FileOpen (Device,
+              mFvInstance->MappedFile,
+@@ -156,7 +189,10 @@ DoDump (
+              mFvInstance->Offset,
+              mFvInstance->FvBase,
+              mFvInstance->FvLength);
+-  FileClose (File);
++  CloseStatus = FileClose (File);
++  if (!EFI_ERROR (Status)) {
++    Status = CloseStatus;
++  }
+   return Status;
+ }
+ 
+@@ -168,23 +204,33 @@ DumpVars (
+   )
+ {
+   EFI_STATUS Status;
+-  RETURN_STATUS PcdStatus;
+-
+-  if (mFvInstance->Device == NULL) {
+-    DEBUG ((DEBUG_INFO, "Variable store not found?\n"));
+-    return;
+-  }
+-
+-  if (!mFvInstance->Dirty) {
+-    DEBUG ((DEBUG_INFO, "Variables not dirty, not dumping!\n"));
+-    return;
+-  }
+-
+-  Status = DoDump (mFvInstance->Device);
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((DEBUG_ERROR, "Couldn't dump '%s'\n", mFvInstance->MappedFile));
+-    ASSERT_EFI_ERROR (Status);
+-    return;
++  RETURN_STATUS PcdStatus;
++  UINTN         Generation;
++
++  // Filesystem protocols are boot services only. A Windows runtime reset must
++  // never dereference gBS, the saved device path, or the filesystem handles.
++  if (mBootServicesGone || EfiAtRuntime () || mSaving) {
++    return;
++  }
++
++  if (!mFvInstance->Dirty) {
++    return;
++  }
++
++  if (mFvInstance->Device == NULL) {
++    DEBUG ((DEBUG_INFO, "Variable store not found?\n"));
++    ReportSaveFailure ();
++    return;
++  }
++
++  mSaving = TRUE;
++  Generation = mFvInstance->Generation;
++  Status = DoDump (mFvInstance->Device);
++  mSaving = FALSE;
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "Couldn't dump '%s'\n", mFvInstance->MappedFile));
++    ReportSaveFailure ();
++    return;
+   }
+ 
+   DEBUG ((DEBUG_INFO, "Variables dumped!\n"));
+@@ -199,8 +245,21 @@ DumpVars (
+     ASSERT_RETURN_ERROR (PcdStatus);
+   }
+ 
+-  mFvInstance->Dirty = FALSE;
+-}
++  mFvInstance->Dirty = (Generation != mFvInstance->Generation);
++  mSaveErrorShown = FALSE;
++}
++
++STATIC
++VOID
++EFIAPI
++StopFilePersistence (
++  IN EFI_EVENT Event,
++  IN VOID      *Context
++  )
++{
++  // Do not perform file I/O here: ExitBootServices has stricter constraints.
++  mBootServicesGone = TRUE;
++}
+ 
+ STATIC
+ VOID
+@@ -264,7 +323,9 @@ InstallDumpVarEventHandlers (
+   )
+ {
+   EFI_STATUS                       Status;
+-  EFI_EVENT                        ReadyToBootEvent;
++  EFI_EVENT                        ReadyToBootEvent;
++  EFI_EVENT                        SaveTimer;
++  EFI_EVENT                        ExitBootEvent;
+   EFI_RESET_NOTIFICATION_PROTOCOL  *ResetNotify;
+ 
+   Status = gBS->CreateEventEx (
+@@ -275,7 +336,19 @@ InstallDumpVarEventHandlers (
+                   &gEfiEventReadyToBootGuid,
+                   &ReadyToBootEvent
+                 );
+-  ASSERT_EFI_ERROR (Status);
++  ASSERT_EFI_ERROR (Status);
++
++  // The callback runs only after higher-TPL variable updates have finished.
++  // Save submitted menu settings even before ReadyToBoot or a reset callback.
++  Status = gBS->CreateEvent (EVT_TIMER | EVT_NOTIFY_SIGNAL, TPL_CALLBACK,
++                  DumpVarsOnEvent, NULL, &SaveTimer);
++  if (!EFI_ERROR (Status)) {
++    Status = gBS->SetTimer (SaveTimer, TimerPeriodic, 2 * 10000000ULL);
++  }
++  ASSERT_EFI_ERROR (Status);
++  Status = gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_NOTIFY,
++                  StopFilePersistence, NULL, &gEfiEventExitBootServicesGuid, &ExitBootEvent);
++  ASSERT_EFI_ERROR (Status);
+ 
+   Status = gBS->LocateProtocol (
+                   &gEfiResetNotificationProtocolGuid,
+@@ -303,8 +376,11 @@ OnSimpleFileSystemInstall (
+   EFI_STATUS Status;
+   UINTN HandleSize;
+   EFI_HANDLE Handle;
+-  EFI_DEVICE_PATH_PROTOCOL *Device;
+-
++  EFI_DEVICE_PATH_PROTOCOL *Device;
++
++  if (mBootServicesGone || EfiAtRuntime ()) {
++    return;
++  }
+   if ((mFvInstance->Device != NULL) &&
+       !EFI_ERROR (CheckStoreExists (mFvInstance->Device))) {
+     //
+@@ -327,17 +403,12 @@ OnSimpleFileSystemInstall (
+       break;
+     }
+ 
+-    ASSERT_EFI_ERROR (Status);
+-
+-    Status = CheckStore (Handle, &Device);
+-    if (EFI_ERROR (Status)) {
+-      continue;
+-    }
+-
+-    Status = DoDump (Device);
++    if (EFI_ERROR (Status)) {
++      break;
++    }
++
++    Status = CheckStore (Handle, &Device);
+     if (EFI_ERROR (Status)) {
+-      DEBUG ((DEBUG_ERROR, "Couldn't update '%s'\n", mFvInstance->MappedFile));
+-      ASSERT_EFI_ERROR (Status);
+       continue;
+     }
+ 
+@@ -345,8 +416,10 @@ OnSimpleFileSystemInstall (
+       gBS->FreePool (mFvInstance->Device);
+     }
+ 
+-    DEBUG ((DEBUG_INFO, "Found variable store!\n"));
+-    mFvInstance->Device = Device;
++    DEBUG ((DEBUG_INFO, "Found variable store!\n"));
++    mFvInstance->Device = Device;
++    // Discovery is read-only. Only a dirty store needs a checked write.
++    DumpVars ();
+     break;
+   }
+ }
+diff --git a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockServiceDxe.inf b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockServiceDxe.inf
+index d15671af7..cead03100 100644
+--- a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockServiceDxe.inf
++++ b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/VarBlockServiceDxe.inf
+@@ -54,7 +54,8 @@
+ [Guids]
+   gEdkiiNvVarStoreFormattedGuid			## PRODUCES ## PROTOCOL
+   gEfiEventVirtualAddressChangeGuid
+-  gEfiEventReadyToBootGuid
++  gEfiEventReadyToBootGuid
++  gEfiEventExitBootServicesGuid
+ 
+ [Protocols]
+   gEfiSimpleFileSystemProtocolGuid
+@@ -74,7 +75,9 @@
+   gRaspberryPiTokenSpaceGuid.PcdNvStorageEventLogSize
+   gRaspberryPiTokenSpaceGuid.PcdFirmwareBlockSize
+   gArmTokenSpaceGuid.PcdFdBaseAddress
+-  gArmTokenSpaceGuid.PcdFdSize
++  gArmTokenSpaceGuid.PcdFdSize
++  gArmTokenSpaceGuid.PcdFvBaseAddress
++  gArmTokenSpaceGuid.PcdFvSize
+ 
+ [Pcd]
+   gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageFtwWorkingBase
+diff --git a/Platform/RaspberryPi/Library/RpiRtcLib/RpiRtcLib.c b/Platform/RaspberryPi/Library/RpiRtcLib/RpiRtcLib.c
+index 298b3678e..48653bb8e 100644
+--- a/Platform/RaspberryPi/Library/RpiRtcLib/RpiRtcLib.c
++++ b/Platform/RaspberryPi/Library/RpiRtcLib/RpiRtcLib.c
+@@ -1,305 +1,305 @@
+-/** @file
+- *
+- *  Copyright (c) 2023, Mario Bălănică <mariobalanica02@gmail.com>
+- *
+- *  SPDX-License-Identifier: BSD-2-Clause-Patent
+- *
+- **/
+-
+-#include <PiDxe.h>
+-
+-#include <Library/DebugLib.h>
+-#include <Library/RealTimeClockLib.h>
+-#include <Library/TimeBaseLib.h>
+-#include <Library/UefiBootServicesTableLib.h>
+-#include <Library/UefiRuntimeLib.h>
+-
+-#include <Protocol/RpiFirmware.h>
+-
+-STATIC RASPBERRY_PI_FIRMWARE_PROTOCOL *mFwProtocol;
+-
+-STATIC
+-VOID
+-EFIAPI
+-OffsetTimeZoneEpoch (
+-  IN      EFI_TIME    *Time,
+-  IN OUT  UINT32      *EpochSeconds,
+-  IN      BOOLEAN     Add
+-  )
+-{
+-  //
+-  // Adjust for the correct time zone
+-  // The timezone setting also reflects the DST setting of the clock
+-  //
+-  if (Time->TimeZone != EFI_UNSPECIFIED_TIMEZONE) {
+-    *EpochSeconds += (Add ? 1 : -1) * Time->TimeZone * SEC_PER_MIN;
+-  } else if ((Time->Daylight & EFI_TIME_IN_DAYLIGHT) == EFI_TIME_IN_DAYLIGHT) {
+-    // Convert to adjusted time, i.e. spring forwards one hour
+-    *EpochSeconds += (Add ? 1 : -1) * SEC_PER_HOUR;
+-  }
+-}
+-
+-/**
+-  Returns the current time and date information, and the time-keeping capabilities
+-  of the hardware platform.
+-
+-  @param  Time                   A pointer to storage to receive a snapshot of the current time.
+-  @param  Capabilities           An optional pointer to a buffer to receive the real time clock
+-                                 device's capabilities.
+-
+-  @retval EFI_SUCCESS            The operation completed successfully.
+-  @retval EFI_INVALID_PARAMETER  Time is NULL.
+-  @retval EFI_DEVICE_ERROR       The time could not be retrieved due to hardware error.
+-  @retval EFI_SECURITY_VIOLATION The time could not be retrieved due to an authentication failure.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-LibGetTime (
+-  OUT EFI_TIME               *Time,
+-  OUT EFI_TIME_CAPABILITIES  *Capabilities
+-  )
+-{
+-  EFI_STATUS  Status;
+-  UINT32      EpochSeconds;
+-
+-  if (Time == NULL) {
+-    return EFI_INVALID_PARAMETER;
+-  }
+-
+-  Status = mFwProtocol->GetRtc (RpiRtcTime, &EpochSeconds);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
+-
+-  OffsetTimeZoneEpoch (Time, &EpochSeconds, TRUE);
+-
++/** @file
++ *
++ *  Copyright (c) 2023, Mario Bălănică <mariobalanica02@gmail.com>
++ *
++ *  SPDX-License-Identifier: BSD-2-Clause-Patent
++ *
++ **/
++
++#include <PiDxe.h>
++
++#include <Library/DebugLib.h>
++#include <Library/RealTimeClockLib.h>
++#include <Library/TimeBaseLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiRuntimeLib.h>
++
++#include <Protocol/RpiFirmware.h>
++
++STATIC RASPBERRY_PI_FIRMWARE_PROTOCOL *mFwProtocol;
++
++// Store the calendar time supplied by the OS, like a PC RTC. TimeZone and
++// Daylight are metadata managed by RealTimeClockRuntimeDxe, not an instruction
++// to shift the clock a second time. In particular, runtime variable updates
++// cannot be persisted by our boot-services-only file-backed variable store.
++// Losing that metadata at reboot must not change the stored calendar time.
++// No country, UTC offset, or daylight-saving rule is selected here.
++
++/**
++  Returns the current time and date information, and the time-keeping capabilities
++  of the hardware platform.
++
++  @param  Time                   A pointer to storage to receive a snapshot of the current time.
++  @param  Capabilities           An optional pointer to a buffer to receive the real time clock
++                                 device's capabilities.
++
++  @retval EFI_SUCCESS            The operation completed successfully.
++  @retval EFI_INVALID_PARAMETER  Time is NULL.
++  @retval EFI_DEVICE_ERROR       The time could not be retrieved due to hardware error.
++  @retval EFI_SECURITY_VIOLATION The time could not be retrieved due to an authentication failure.
++
++**/
++EFI_STATUS
++EFIAPI
++LibGetTime (
++  OUT EFI_TIME               *Time,
++  OUT EFI_TIME_CAPABILITIES  *Capabilities
++  )
++{
++  EFI_STATUS  Status;
++  UINT32      EpochSeconds;
++
++  if (Time == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Status = mFwProtocol->GetRtc (RpiRtcTime, &EpochSeconds);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
+   EpochToEfiTime (EpochSeconds, Time);
++  Time->Pad1 = 0;
++  Time->Pad2 = 0;
+ 
+-  return EFI_SUCCESS;
+-}
+-
+-/**
+-  Sets the current local time and date information.
+-
+-  @param  Time                  A pointer to the current time.
+-
+-  @retval EFI_SUCCESS           The operation completed successfully.
+-  @retval EFI_INVALID_PARAMETER A time field is out of range.
+-  @retval EFI_DEVICE_ERROR      The time could not be set due to hardware error.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-LibSetTime (
+-  IN  EFI_TIME  *Time
+-  )
+-{
+-  EFI_STATUS  Status;
+-  UINT32      EpochSeconds;
+-
+-  if (Time == NULL || !IsTimeValid (Time)) {
+-    return EFI_UNSUPPORTED;
+-  }
+-
+-  EpochSeconds = (UINT32)EfiTimeToEpoch (Time);
+-
+-  OffsetTimeZoneEpoch (Time, &EpochSeconds, FALSE);
+-
+-  Status = mFwProtocol->SetRtc (RpiRtcTime, EpochSeconds);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
++  if (Capabilities != NULL) {
++    Capabilities->Resolution = 1;
++    Capabilities->Accuracy = 0; // Hardware accuracy is not reported by mailbox.
++    Capabilities->SetsToZero = FALSE;
+   }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Sets the current local time and date information.
++
++  @param  Time                  A pointer to the current time.
++
++  @retval EFI_SUCCESS           The operation completed successfully.
++  @retval EFI_INVALID_PARAMETER A time field is out of range.
++  @retval EFI_DEVICE_ERROR      The time could not be set due to hardware error.
++
++**/
++EFI_STATUS
++EFIAPI
++LibSetTime (
++  IN  EFI_TIME  *Time
++  )
++{
++  EFI_STATUS  Status;
++  UINTN       EpochSeconds;
+ 
+-  return EFI_SUCCESS;
+-}
+-
+-/**
+-  Returns the current wakeup alarm clock setting.
+-
+-  @param  Enabled               Indicates if the alarm is currently enabled or disabled.
+-  @param  Pending               Indicates if the alarm signal is pending and requires acknowledgement.
+-  @param  Time                  The current alarm setting.
+-
+-  @retval EFI_SUCCESS           The alarm settings were returned.
+-  @retval EFI_INVALID_PARAMETER Any parameter is NULL.
+-  @retval EFI_DEVICE_ERROR      The wakeup time could not be retrieved due to a hardware error.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-LibGetWakeupTime (
+-  OUT BOOLEAN   *Enabled,
+-  OUT BOOLEAN   *Pending,
+-  OUT EFI_TIME  *Time
+-  )
+-{
+-  EFI_STATUS  Status;
+-  UINT32      EpochSeconds;
+-  UINT32      EnableVal;
+-  UINT32      PendingVal;
+-
+-  if (Time == NULL || Enabled == NULL || Pending == NULL) {
++  if (Time == NULL || !IsTimeValid (Time)) {
+     return EFI_INVALID_PARAMETER;
+   }
+-
+-  Status = mFwProtocol->GetRtc (RpiRtcAlarmEnable, &EnableVal);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
+-
+-  Status = mFwProtocol->GetRtc (RpiRtcAlarmPending, &PendingVal);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
+-
+-  *Enabled = EnableVal;
+-  *Pending = PendingVal;
+-
+-  if (*Pending) {
+-    // Acknowledge alarm
+-    Status = mFwProtocol->SetRtc (RpiRtcAlarmPending, TRUE);
+-    if (EFI_ERROR (Status)) {
+-      return Status;
+-    }
++  if (Time->Year < 1970) {
++    return EFI_UNSUPPORTED;
+   }
+ 
+-  Status = mFwProtocol->GetRtc (RpiRtcAlarm, &EpochSeconds);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
++  // The mailbox accepts a 32-bit seconds counter; never silently wrap a date.
++  EpochSeconds = EfiTimeToEpoch (Time);
++  if (EpochSeconds > MAX_UINT32) {
++    return EFI_UNSUPPORTED;
+   }
+ 
+-  OffsetTimeZoneEpoch (Time, &EpochSeconds, TRUE);
+-
++  Status = mFwProtocol->SetRtc (RpiRtcTime, (UINT32)EpochSeconds);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Returns the current wakeup alarm clock setting.
++
++  @param  Enabled               Indicates if the alarm is currently enabled or disabled.
++  @param  Pending               Indicates if the alarm signal is pending and requires acknowledgement.
++  @param  Time                  The current alarm setting.
++
++  @retval EFI_SUCCESS           The alarm settings were returned.
++  @retval EFI_INVALID_PARAMETER Any parameter is NULL.
++  @retval EFI_DEVICE_ERROR      The wakeup time could not be retrieved due to a hardware error.
++
++**/
++EFI_STATUS
++EFIAPI
++LibGetWakeupTime (
++  OUT BOOLEAN   *Enabled,
++  OUT BOOLEAN   *Pending,
++  OUT EFI_TIME  *Time
++  )
++{
++  EFI_STATUS  Status;
++  UINT32      EpochSeconds;
++  UINT32      EnableVal;
++  UINT32      PendingVal;
++
++  if (Time == NULL || Enabled == NULL || Pending == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Status = mFwProtocol->GetRtc (RpiRtcAlarmEnable, &EnableVal);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  Status = mFwProtocol->GetRtc (RpiRtcAlarmPending, &PendingVal);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  *Enabled = EnableVal;
++  *Pending = PendingVal;
++
++  if (*Pending) {
++    // Acknowledge alarm
++    Status = mFwProtocol->SetRtc (RpiRtcAlarmPending, TRUE);
++    if (EFI_ERROR (Status)) {
++      return Status;
++    }
++  }
++
++  Status = mFwProtocol->GetRtc (RpiRtcAlarm, &EpochSeconds);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
+   EpochToEfiTime (EpochSeconds, Time);
+-
+-  return EFI_SUCCESS;
+-}
+-
+-/**
+-  Sets the system wakeup alarm clock time.
+-
+-  @param  Enabled               Enable or disable the wakeup alarm.
+-  @param  Time                  If Enable is TRUE, the time to set the wakeup alarm for.
+-
+-  @retval EFI_SUCCESS           If Enable is TRUE, then the wakeup alarm was enabled. If
+-                                Enable is FALSE, then the wakeup alarm was disabled.
+-  @retval EFI_INVALID_PARAMETER A time field is out of range.
+-  @retval EFI_DEVICE_ERROR      The wakeup time could not be set due to a hardware error.
+-  @retval EFI_UNSUPPORTED       A wakeup timer is not supported on this platform.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-LibSetWakeupTime (
+-  IN BOOLEAN    Enabled,
+-  OUT EFI_TIME  *Time
+-  )
+-{
+-  EFI_STATUS  Status;
+-  UINT32      EpochSeconds;
+-
+-  if (Enabled) {
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Sets the system wakeup alarm clock time.
++
++  @param  Enabled               Enable or disable the wakeup alarm.
++  @param  Time                  If Enable is TRUE, the time to set the wakeup alarm for.
++
++  @retval EFI_SUCCESS           If Enable is TRUE, then the wakeup alarm was enabled. If
++                                Enable is FALSE, then the wakeup alarm was disabled.
++  @retval EFI_INVALID_PARAMETER A time field is out of range.
++  @retval EFI_DEVICE_ERROR      The wakeup time could not be set due to a hardware error.
++  @retval EFI_UNSUPPORTED       A wakeup timer is not supported on this platform.
++
++**/
++EFI_STATUS
++EFIAPI
++LibSetWakeupTime (
++  IN BOOLEAN    Enabled,
++  OUT EFI_TIME  *Time
++  )
++{
++  EFI_STATUS  Status;
++  UINTN       EpochSeconds;
++
++  if (Enabled) {
+     if (Time == NULL || !IsTimeValid (Time)) {
+       return EFI_INVALID_PARAMETER;
+     }
+-
+-    EpochSeconds = (UINT32)EfiTimeToEpoch (Time);
+-
+-    OffsetTimeZoneEpoch (Time, &EpochSeconds, FALSE);
+-
+-    Status = mFwProtocol->SetRtc (RpiRtcAlarm, EpochSeconds);
+-    if (EFI_ERROR (Status)) {
+-      return Status;
++    if (Time->Year < 1970) {
++      return EFI_UNSUPPORTED;
+     }
+-  }
+-
+-  Status = mFwProtocol->SetRtc (RpiRtcAlarmEnable, Enabled);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
+-
+-  return EFI_SUCCESS;
+-}
+-
+-/**
+-  Fixup internal data so that EFI can be call in virtual mode.
+-  Call the passed in Child Notify event and convert any pointers in
+-  lib to virtual mode.
+-
+-  @param[in]    Event   The Event that is being processed
+-  @param[in]    Context Event Context
+-
+-**/
+-STATIC
+-VOID
+-EFIAPI
+-VirtualAddressChangeNotify (
+-  IN EFI_EVENT        Event,
+-  IN VOID             *Context
+-  )
+-{
+-  EfiConvertPointer (0x0, (VOID **)&mFwProtocol);
+-}
+-
+-/**
+-  This is the declaration of an EFI image entry point. This can be the entry point to an application
+-  written to this specification, an EFI boot service driver, or an EFI runtime driver.
+-
+-  @param  ImageHandle           Handle that identifies the loaded image.
+-  @param  SystemTable           System Table for this image.
+-
+-  @retval EFI_SUCCESS           The operation completed successfully.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-LibRtcInitialize (
+-  IN EFI_HANDLE                 ImageHandle,
+-  IN EFI_SYSTEM_TABLE           *SystemTable
+-  )
+-{
+-  EFI_STATUS  Status;
+-  EFI_TIME    Time;
+-  EFI_EVENT   VirtualAddressChangeEvent;
+-
+-  Status = gBS->LocateProtocol (
+-                  &gRaspberryPiFirmwareProtocolGuid,
+-                  NULL,
+-                  (VOID **)&mFwProtocol);
+-  ASSERT_EFI_ERROR (Status);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
+-
+-  Status = gBS->CreateEventEx (
+-                  EVT_NOTIFY_SIGNAL,
+-                  TPL_NOTIFY,
+-                  VirtualAddressChangeNotify,
+-                  NULL,
+-                  &gEfiEventVirtualAddressChangeGuid,
+-                  &VirtualAddressChangeEvent);
+-  ASSERT_EFI_ERROR (Status);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
+-
+-  //
+-  // Initial RTC time starts off at Epoch = 0, which is out
+-  // of UEFI's bounds. Update it to the firmware build time.
+-  //
+-  Status = LibGetTime (&Time, NULL);
+-  if (EFI_ERROR(Status)) {
+-    return Status;
+-  }
+-
+-  if (!IsTimeValid (&Time)) {
+-    EpochToEfiTime (BUILD_EPOCH, &Time);
+-    Status = LibSetTime (&Time);
+-    if (EFI_ERROR(Status)) {
+-      return Status;
++
++    EpochSeconds = EfiTimeToEpoch (Time);
++    if (EpochSeconds > MAX_UINT32) {
++      return EFI_UNSUPPORTED;
+     }
+-  }
+ 
+-  return EFI_SUCCESS;
+-}
++    Status = mFwProtocol->SetRtc (RpiRtcAlarm, (UINT32)EpochSeconds);
++    if (EFI_ERROR (Status)) {
++      return Status;
++    }
++  }
++
++  Status = mFwProtocol->SetRtc (RpiRtcAlarmEnable, Enabled);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Fixup internal data so that EFI can be call in virtual mode.
++  Call the passed in Child Notify event and convert any pointers in
++  lib to virtual mode.
++
++  @param[in]    Event   The Event that is being processed
++  @param[in]    Context Event Context
++
++**/
++STATIC
++VOID
++EFIAPI
++VirtualAddressChangeNotify (
++  IN EFI_EVENT        Event,
++  IN VOID             *Context
++  )
++{
++  EfiConvertPointer (0x0, (VOID **)&mFwProtocol);
++}
++
++/**
++  This is the declaration of an EFI image entry point. This can be the entry point to an application
++  written to this specification, an EFI boot service driver, or an EFI runtime driver.
++
++  @param  ImageHandle           Handle that identifies the loaded image.
++  @param  SystemTable           System Table for this image.
++
++  @retval EFI_SUCCESS           The operation completed successfully.
++
++**/
++EFI_STATUS
++EFIAPI
++LibRtcInitialize (
++  IN EFI_HANDLE                 ImageHandle,
++  IN EFI_SYSTEM_TABLE           *SystemTable
++  )
++{
++  EFI_STATUS  Status;
++  EFI_TIME    Time = { 0 };
++  EFI_EVENT   VirtualAddressChangeEvent;
++
++  Status = gBS->LocateProtocol (
++                  &gRaspberryPiFirmwareProtocolGuid,
++                  NULL,
++                  (VOID **)&mFwProtocol);
++  ASSERT_EFI_ERROR (Status);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  Status = gBS->CreateEventEx (
++                  EVT_NOTIFY_SIGNAL,
++                  TPL_NOTIFY,
++                  VirtualAddressChangeNotify,
++                  NULL,
++                  &gEfiEventVirtualAddressChangeGuid,
++                  &VirtualAddressChangeEvent);
++  ASSERT_EFI_ERROR (Status);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  //
++  // An unprogrammed RTC starts at Epoch = 0. Seed only that sentinel or an
++  // invalid calendar, never a valid clock merely because its metadata was lost.
++  //
++  Time.TimeZone = EFI_UNSPECIFIED_TIMEZONE;
++  Status = LibGetTime (&Time, NULL);
++  if (EFI_ERROR(Status)) {
++    return Status;
++  }
++
++  if (!IsTimeValid (&Time) || EfiTimeToEpoch (&Time) == 0) {
++    EpochToEfiTime (BUILD_EPOCH, &Time);
++    Status = LibSetTime (&Time);
++    if (EFI_ERROR(Status)) {
++      return Status;
++    }
++  }
++
++  return EFI_SUCCESS;
++}
