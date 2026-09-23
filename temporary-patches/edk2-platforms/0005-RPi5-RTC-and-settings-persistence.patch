@@ -1,5 +1,5 @@
 diff --git a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
-index 3bcd79428..5d1eb7212 100644
+index 3bcd79428..169ea255a 100644
 --- a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
 +++ b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
 @@ -8,6 +8,41 @@
@@ -108,7 +108,7 @@ index 3bcd79428..5d1eb7212 100644
  
    *Device = NULL;
    Status = gBS->HandleProtocol (
-@@ -146,12 +198,33 @@ CheckStore (
+@@ -146,12 +198,37 @@ CheckStore (
      goto ErrHandle;
    }
  
@@ -120,7 +120,11 @@ index 3bcd79428..5d1eb7212 100644
 +  if (!EFI_ERROR (Status)) {
 +    Status = File->GetPosition (File, &FileSize);
 +  }
-+  if (!EFI_ERROR (Status) && FileSize != FixedPcdGet32 (PcdFdSize)) {
++  // GenFds may omit the reserved tail after the last populated FD region.
++  // Require all variable bytes, not padding that is not part of the payload.
++  if (!EFI_ERROR (Status) &&
++      (FileSize < (UINT64)mFvInstance->Offset + mFvInstance->FvLength ||
++       FileSize > FixedPcdGet32 (PcdFdSize))) {
 +    Status = EFI_VOLUME_CORRUPTED;
 +  }
 +  if (!EFI_ERROR (Status)) {

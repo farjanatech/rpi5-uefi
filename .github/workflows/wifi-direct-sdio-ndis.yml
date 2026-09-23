@@ -144,6 +144,7 @@ jobs:
           export EDK2_BUILD_FLAGS="--pcd gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVendor=L${{ github.repository_owner }}"
           ./build-wifi-direct-sdio-ndis.sh --model 5 --debug 0 --edk2-flags "${EDK2_BUILD_FLAGS}" 2>&1 | tee WIFI_DIRECT_SDIO_NDIS_BUILD.log
           test -f RPI_EFI.fd
+          python3 tests/rtc_settings_test.py --firmware RPI_EFI.fd | tee -a RTC_SETTINGS_TESTS.log
           git -C edk2-platforms diff --exit-code
           grep -Fq 'Applied experimental RPi5 fail-safe fan patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log
           grep -Fq 'Applied RPi5 Windows fan safe-handoff and mailbox-routing patch' WIFI_DIRECT_SDIO_NDIS_BUILD.log

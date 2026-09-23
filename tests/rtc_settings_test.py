@@ -7,6 +7,7 @@ No Windows driver or firmware is executed on the developer's PC.
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -247,8 +248,12 @@ int main(void) {
   CHECK(CheckStore(NULL,&chosen)!=0 && chosen==NULL);Disk[256]^=1;
   Disk[8192]^=1;
   CHECK(CheckStore(NULL,&chosen)!=0 && chosen==NULL);Disk[8192]^=1;
+  DiskSize=instance.Offset+instance.FvLength; // Valid image with omitted reserved tail.
+  CHECK(CheckStore(NULL,&chosen)==0);free(chosen);
   DiskSize--;
-  CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);DiskSize++;
+  CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);
+  DiskSize=sizeof(Disk)+1;
+  CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);DiskSize=sizeof(Disk);
   Media.ReadOnly=TRUE;CHECK(CheckStore(NULL,&chosen)==EFI_ACCESS_DENIED);Media.ReadOnly=FALSE;
   Media.MediaPresent=FALSE;CHECK(CheckStore(NULL,&chosen)==EFI_NO_MEDIA);Media.MediaPresent=TRUE;
   for(int fault=1;fault<=9;fault++) {
@@ -287,6 +292,19 @@ def run(name, text):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--firmware":
+        image = pathlib.Path(sys.argv[2]).read_bytes()
+        fdf = (PLATFORM / "RPi5/RPi5.fdf").read_text()
+        # Assert this fixture's layout against pinned FDF before testing the
+        # emitted artifact: final populated NV region ends before reserved tail.
+        assert "0x003b0000|0x0000e000" in fdf
+        assert "0x003c0000|0x00010000" in fdf
+        assert "Size          = 0x003e0000" in fdf
+        assert 0x003d0000 <= len(image) <= 0x003e0000
+        assert image[0x003b0028:0x003b002c] == b"_FVH"
+        assert int.from_bytes(image[0x003b0020:0x003b0028], "little") == 0x20000
+        print(f"PASS packaged FD: {len(image)} bytes; full NV store present, reserved-tail omission accepted")
+        return
     rtc = no_includes((PLATFORM / "Library/RpiRtcLib/RpiRtcLib.c").read_text())
     timebase = no_includes((ROOT / "edk2/EmbeddedPkg/Library/TimeBaseLib/TimeBaseLib.c").read_text())
     run("rtc", RTC_PREFIX + timebase + rtc + RTC_MAIN)
