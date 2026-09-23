@@ -1,12 +1,13 @@
 diff --git a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
-index 3bcd79428..169ea255a 100644
+index 3bcd79428..91107a26b 100644
 --- a/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
 +++ b/Platform/RaspberryPi/Drivers/VarBlockServiceDxe/FileIo.c
-@@ -8,6 +8,41 @@
+@@ -8,6 +8,109 @@
   **/
  
  #include "VarBlockService.h"
 +#include <Library/BaseMemoryLib.h>
++#include <Pi/PiFirmwareFile.h>
 +
 +// Compare in bounded chunks, without allocating during reset-time saving.
 +EFI_STATUS
@@ -41,10 +42,77 @@ index 3bcd79428..169ea255a 100644
 +  }
 +  return EFI_SUCCESS;
 +}
++
++
++// The SEC file executes in place in RAM. Its mailbox reply buffer and library
++// globals are modified before DXE, so comparing its payload to disk rejects the
++// very firmware we booted. Match the FV/SEC headers and all bytes after SEC,
++// including the immutable compressed DXE image. Never write any of these bytes.
++// This is a target-identity check, not cryptographic firmware authentication.
++STATIC
++EFI_STATUS
++FileVerifyFirmware (
++  IN EFI_FILE_PROTOCOL *File
++  )
++{
++  EFI_FIRMWARE_VOLUME_HEADER *Fv;
++  EFI_FFS_FILE_HEADER        *Sec;
++  EFI_FFS_FILE_HEADER        *Dxe;
++  EFI_STATUS                 Status;
++  UINTN                      FvSize;
++  UINTN                      FileOffset;
++  UINTN                      SecOffset;
++  UINTN                      SecSize;
++  UINTN                      TailOffset;
++  UINTN                      DxeOffset;
++  UINTN                      DxeSize;
++
++  Fv = (EFI_FIRMWARE_VOLUME_HEADER *)(UINTN)FixedPcdGet64 (PcdFvBaseAddress);
++  FvSize = FixedPcdGet32 (PcdFvSize);
++  FileOffset = (UINTN)(FixedPcdGet64 (PcdFvBaseAddress) - FixedPcdGet64 (PcdFdBaseAddress));
++
++  // Only accept the pinned RPi5 layout: ordinary SEC followed by FV_IMAGE.
++  // Bound every length before pointer arithmetic; fail closed on other layouts.
++  if (FvSize < sizeof (*Fv) || Fv->Signature != EFI_FVH_SIGNATURE ||
++      Fv->Revision != EFI_FVH_REVISION || Fv->FvLength != FvSize ||
++      Fv->ExtHeaderOffset != 0 || Fv->HeaderLength < sizeof (*Fv) ||
++      Fv->HeaderLength > FvSize) {
++    return EFI_VOLUME_CORRUPTED;
++  }
++  SecOffset = ALIGN_VALUE ((UINTN)Fv->HeaderLength, 8);
++  if (SecOffset > FvSize || FvSize - SecOffset < sizeof (*Sec)) {
++    return EFI_VOLUME_CORRUPTED;
++  }
++  Sec = (EFI_FFS_FILE_HEADER *)((UINT8 *)Fv + SecOffset);
++  SecSize = (UINTN)Sec->Size[0] | ((UINTN)Sec->Size[1] << 8) | ((UINTN)Sec->Size[2] << 16);
++  if (Sec->Type != EFI_FV_FILETYPE_SECURITY_CORE ||
++      (Sec->Attributes & FFS_ATTRIB_LARGE_FILE) != 0 ||
++      SecSize <= sizeof (*Sec) || SecSize > FvSize - SecOffset) {
++    return EFI_VOLUME_CORRUPTED;
++  }
++  TailOffset = SecOffset + SecSize;
++  DxeOffset = ALIGN_VALUE (TailOffset, 8);
++  if (DxeOffset > FvSize || FvSize - DxeOffset < sizeof (*Dxe)) {
++    return EFI_VOLUME_CORRUPTED;
++  }
++  Dxe = (EFI_FFS_FILE_HEADER *)((UINT8 *)Fv + DxeOffset);
++  DxeSize = (UINTN)Dxe->Size[0] | ((UINTN)Dxe->Size[1] << 8) | ((UINTN)Dxe->Size[2] << 16);
++  if (Dxe->Type != EFI_FV_FILETYPE_FIRMWARE_VOLUME_IMAGE ||
++      (Dxe->Attributes & FFS_ATTRIB_LARGE_FILE) != 0 ||
++      DxeSize <= sizeof (*Dxe) || DxeSize > FvSize - DxeOffset) {
++    return EFI_VOLUME_CORRUPTED;
++  }
++  Status = FileVerify (File, FileOffset, (UINTN)Fv, SecOffset + sizeof (*Sec));
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++  return FileVerify (File, FileOffset + TailOffset, (UINTN)Fv + TailOffset,
++             FvSize - TailOffset);
++}
  
  
  EFI_STATUS
-@@ -19,24 +54,34 @@ FileWrite (
+@@ -19,24 +122,34 @@ FileWrite (
    )
  {
    EFI_STATUS Status;
@@ -87,7 +155,7 @@ index 3bcd79428..169ea255a 100644
  }
  
  
-@@ -85,6 +130,12 @@ FileOpen (
+@@ -85,6 +198,12 @@ FileOpen (
                     );
    ASSERT_EFI_ERROR (Status);
    ASSERT (Root != NULL);
@@ -100,22 +168,24 @@ index 3bcd79428..169ea255a 100644
  
    //
    // Open file
-@@ -117,6 +168,7 @@ CheckStore (
+@@ -117,6 +236,8 @@ CheckStore (
    EFI_STATUS Status;
    EFI_BLOCK_IO_PROTOCOL *BlkIo;
    EFI_FILE_PROTOCOL *File;
 +  UINT64 FileSize;
++  EFI_STATUS CloseStatus;
  
    *Device = NULL;
    Status = gBS->HandleProtocol (
-@@ -146,12 +198,37 @@ CheckStore (
+@@ -146,12 +267,38 @@ CheckStore (
      goto ErrHandle;
    }
  
 -  /* We found it! Maybe do more checks...? */
 -
-+  // A same-named file on another disk is not enough. Match the loaded firmware
-+  // volume and its original variable store before selecting a writable target.
+-  FileClose (File);
++  // A same-named file on another disk is not enough. Match the stable firmware
++  // contents and original variable store before selecting a writable target.
 +  Status = File->SetPosition (File, MAX_UINT64);
 +  if (!EFI_ERROR (Status)) {
 +    Status = File->GetPosition (File, &FileSize);
@@ -128,14 +198,15 @@ index 3bcd79428..169ea255a 100644
 +    Status = EFI_VOLUME_CORRUPTED;
 +  }
 +  if (!EFI_ERROR (Status)) {
-+    Status = FileVerify (File,
-+               (UINTN)(FixedPcdGet64 (PcdFvBaseAddress) - FixedPcdGet64 (PcdFdBaseAddress)),
-+               (UINTN)FixedPcdGet64 (PcdFvBaseAddress), FixedPcdGet32 (PcdFvSize));
++    Status = FileVerifyFirmware (File);
 +  }
 +  if (!EFI_ERROR (Status)) {
 +    Status = VerifyBootVariableStore (File);
 +  }
-   FileClose (File);
++  CloseStatus = FileClose (File);
++  if (!EFI_ERROR (Status)) {
++    Status = CloseStatus;
++  }
 +  if (EFI_ERROR (Status)) {
 +    goto ErrHandle;
 +  }

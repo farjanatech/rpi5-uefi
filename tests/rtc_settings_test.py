@@ -178,7 +178,23 @@ int main(void) {
 
 FILE_PREFIX = r'''
 typedef int EFI_DEVICE_PATH_PROTOCOL;
-typedef struct { int unused; } EFI_FIRMWARE_VOLUME_HEADER;
+#pragma pack(push,1)
+typedef struct { UINT32 NumBlocks,Length; } EFI_FV_BLOCK_MAP_ENTRY;
+typedef struct {
+  UINT8 ZeroVector[16],FileSystemGuid[16];UINT64 FvLength;
+  UINT32 Signature,Attributes;UINT16 HeaderLength,Checksum,ExtHeaderOffset;
+  UINT8 Reserved,Revision;EFI_FV_BLOCK_MAP_ENTRY BlockMap[1];
+} EFI_FIRMWARE_VOLUME_HEADER;
+typedef struct { UINT8 Name[16],IntegrityCheck[2],Type,Attributes,Size[3],State; } EFI_FFS_FILE_HEADER;
+#pragma pack(pop)
+_Static_assert(sizeof(EFI_FIRMWARE_VOLUME_HEADER)==64,"FV layout");
+_Static_assert(sizeof(EFI_FFS_FILE_HEADER)==24,"FFS layout");
+#define EFI_FVH_SIGNATURE 0x4856465f
+#define EFI_FVH_REVISION 2
+#define EFI_FV_FILETYPE_SECURITY_CORE 3
+#define EFI_FV_FILETYPE_FIRMWARE_VOLUME_IMAGE 11
+#define FFS_ATTRIB_LARGE_FILE 1
+#define ALIGN_VALUE(v,a) (((v)+(a)-1)&~((UINTN)(a)-1))
 typedef struct FILE_PROTOCOL EFI_FILE_PROTOCOL;
 struct FILE_PROTOCOL {
   EFI_STATUS (*SetPosition)(EFI_FILE_PROTOCOL*,UINT64);
@@ -192,7 +208,14 @@ struct FILE_PROTOCOL {
 #define EFI_FILE_MODE_WRITE 2
 #define PLATFORM_RESET_DELAY 3500000
 #define CompareMem memcmp
-static UINT8 Disk[16384], LoadedFv[4096], Vars[5000];
+#ifndef TEST_DISK_SIZE
+#define TEST_DISK_SIZE 16384
+#define TEST_FV_SIZE 4096
+#define TEST_FV_OFFSET 256
+#define TEST_NV_SIZE 5000
+#define TEST_NV_OFFSET 8192
+#endif
+static UINT8 Disk[TEST_DISK_SIZE], LoadedFv[TEST_FV_SIZE], Vars[TEST_NV_SIZE];
 static UINTN Position, DiskSize=sizeof(Disk);
 static int Fault, Runtime, Mutate;
 static unsigned WriteCalls, FlushCalls, CloseCalls, OpenCalls;
@@ -212,7 +235,7 @@ static RETURN_STATUS PcdSet32S(int x,UINT32 y) {(void)x;(void)y;return 0;}
 #define PcdFdSize sizeof(Disk)
 #define PcdFvSize sizeof(LoadedFv)
 #define PcdFvBaseAddress ((UINTN)LoadedFv)
-#define PcdFdBaseAddress ((UINTN)LoadedFv-256)
+#define PcdFdBaseAddress ((UINTN)LoadedFv-TEST_FV_OFFSET)
 #define FixedPcdGet32(x) (x)
 #define FixedPcdGet64(x) (x)
 static unsigned Warnings;
@@ -235,15 +258,52 @@ static EFI_DEVICE_PATH_PROTOCOL *DuplicateDevicePath(EFI_DEVICE_PATH_PROTOCOL *p
 
 FILE_MAIN = r'''
 static void MutateStore(void) {mFvInstance->Generation++;}
+static void InitFv(void) {
+  memset(LoadedFv,0xff,sizeof(LoadedFv));
+  EFI_FIRMWARE_VOLUME_HEADER *fv=(void*)LoadedFv;
+  memset(fv,0,sizeof(*fv));fv->Signature=EFI_FVH_SIGNATURE;fv->Revision=2;
+  fv->HeaderLength=72;fv->FvLength=sizeof(LoadedFv);
+  EFI_FFS_FILE_HEADER *sec=(void*)(LoadedFv+72),*dxe=(void*)(LoadedFv+328);
+  memset(sec,0,sizeof(*sec));sec->Type=3;sec->Size[0]=255; // exercise alignment padding
+  memset(dxe,0,sizeof(*dxe));dxe->Type=11;dxe->Size[1]=2;
+}
 int main(void) {
   EFI_FW_VOL_INSTANCE instance={.FvBase=(UINTN)Vars,.FvLength=sizeof(Vars),.Offset=8192,.Device=&Device,.MappedFile=L"RPI_EFI.FD"};
   EFI_DEVICE_PATH_PROTOCOL *chosen;
   mFvInstance=&instance;
-  memset(Vars,0x57,sizeof(Vars));memset(LoadedFv,0xb6,sizeof(LoadedFv));
+  memset(Vars,0x57,sizeof(Vars));InitFv();
   memcpy(Disk+256,LoadedFv,sizeof(LoadedFv));memcpy(Disk+8192,Vars,sizeof(Vars));
   CHECK(CaptureBootVariableStore()==0);
   CHECK(CheckStore(NULL,&chosen)==0 && chosen!=NULL);free(chosen);
   CHECK(WriteCalls==0); // Target discovery must never modify a candidate file.
+  // Every SEC payload byte may change in RAM during startup, unlike FV/FFS
+  // headers and the compressed DXE payload. The old whole-FV check must fail.
+  for(unsigned i=96;i<327;i++) LoadedFv[i]^=0x5a;
+  CHECK(FileVerify(&File,256,(UINTN)LoadedFv,sizeof(LoadedFv))==EFI_DEVICE_ERROR);
+  CHECK(CheckStore(NULL,&chosen)==0 && chosen!=NULL);free(chosen);
+  CHECK(WriteCalls==0);
+  const unsigned immutable[]={0,48,72,95,327,328,352,839,4095};
+  for(unsigned i=0;i<sizeof(immutable)/sizeof(*immutable);i++) {
+    Disk[256+immutable[i]]^=1;
+    CHECK(CheckStore(NULL,&chosen)!=0 && chosen==NULL);
+    Disk[256+immutable[i]]^=1;
+  }
+  UINT8 snapshot[sizeof(LoadedFv)];memcpy(snapshot,LoadedFv,sizeof(snapshot));
+  EFI_FIRMWARE_VOLUME_HEADER *fv=(void*)LoadedFv;
+  EFI_FFS_FILE_HEADER *sec=(void*)(LoadedFv+72),*dxe=(void*)(LoadedFv+328);
+  // Reject malformed / unsupported loaded layouts before any candidate write.
+  fv->HeaderLength=0;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  fv->HeaderLength=4096;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  fv->ExtHeaderOffset=64;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  fv->FvLength++;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  sec->Type=11;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  sec->Attributes=1;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  sec->Size[0]=24;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  sec->Size[2]=255;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  dxe->Type=3;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  dxe->Attributes=1;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  dxe->Size[2]=255;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
+  dxe->Size[1]=0;CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);memcpy(LoadedFv,snapshot,sizeof(snapshot));
   Disk[256]^=1;
   CHECK(CheckStore(NULL,&chosen)!=0 && chosen==NULL);Disk[256]^=1;
   Disk[8192]^=1;
@@ -256,6 +316,7 @@ int main(void) {
   CHECK(CheckStore(NULL,&chosen)==EFI_VOLUME_CORRUPTED);DiskSize=sizeof(Disk);
   Media.ReadOnly=TRUE;CHECK(CheckStore(NULL,&chosen)==EFI_ACCESS_DENIED);Media.ReadOnly=FALSE;
   Media.MediaPresent=FALSE;CHECK(CheckStore(NULL,&chosen)==EFI_NO_MEDIA);Media.MediaPresent=TRUE;
+  Fault=7;CHECK(CheckStore(NULL,&chosen)==EFI_DEVICE_ERROR && chosen==NULL);Fault=0;
   for(int fault=1;fault<=9;fault++) {
     Fault=fault; instance.Dirty=TRUE;unsigned before=WriteCalls;
     DumpVars();CHECK(instance.Dirty);CHECK(Warnings>0);
@@ -266,6 +327,15 @@ int main(void) {
     Vars[0]=(UINT8)value;instance.Dirty=TRUE;instance.Generation++;DumpVars();
     CHECK(!instance.Dirty && Disk[8192]==value);
   }
+  const UINT8 speeds[]={3,2,3};
+  for(unsigned i=0;i<sizeof(speeds);i++) {
+    Vars[1]=speeds[i];instance.Dirty=TRUE;instance.Generation++;DumpVars();
+    CHECK(!instance.Dirty && Disk[8193]==speeds[i]);
+    // Model next boot from persisted data, including a new boot-store snapshot.
+    memset(Vars,0,sizeof(Vars));memcpy(Vars,Disk+8192,sizeof(Vars));
+    free(mBootVariableStore);CHECK(CaptureBootVariableStore()==0);
+    CHECK(CheckStore(NULL,&chosen)==0);free(chosen);CHECK(Vars[1]==speeds[i]);
+  }
   unsigned before=WriteCalls;DumpVars();CHECK(WriteCalls==before);
   instance.Dirty=TRUE;instance.Device=NULL;DumpVars();CHECK(instance.Dirty && WriteCalls==before);instance.Device=&Device;
   mSaving=TRUE;DumpVars();CHECK(instance.Dirty && WriteCalls==before);mSaving=FALSE;
@@ -274,13 +344,52 @@ int main(void) {
   before=OpenCalls;instance.Dirty=TRUE;StopFilePersistence(NULL,NULL);DumpVars();
   CHECK(OpenCalls==before && instance.Dirty); // No file/boot services after EBS.
   free(mBootVariableStore);
-  printf("PASS settings: %u checks; target identity, short writes, flush/read/close faults, retries, both toggle directions, runtime guard and concurrent updates\n",Checks);
+  printf("PASS settings: %u checks; mutable SEC regression, immutable identity, malformed layouts, short writes, flush/read/close faults, Gen3/Gen2 simulated reload, runtime guard and concurrent updates\n",Checks);
   return 0;
 }
 '''
 
 
-def run(name, text):
+FILE_ARTIFACT_MAIN = r'''
+static void MutateStore(void) {mFvInstance->Generation++;}
+int main(int argc,char **argv) {
+  CHECK(argc==2);FILE *input=fopen(argv[1],"rb");CHECK(input!=NULL);
+  DiskSize=fread(Disk,1,sizeof(Disk),input);CHECK(!ferror(input));CHECK(fclose(input)==0);
+  CHECK(DiskSize>=TEST_NV_OFFSET+sizeof(Vars));
+  memcpy(LoadedFv,Disk+TEST_FV_OFFSET,sizeof(LoadedFv));memcpy(Vars,Disk+TEST_NV_OFFSET,sizeof(Vars));
+  EFI_FW_VOL_INSTANCE instance={.FvBase=(UINTN)Vars,.FvLength=sizeof(Vars),.Offset=TEST_NV_OFFSET,.Device=&Device,.MappedFile=L"RPI_EFI.FD"};
+  mFvInstance=&instance;EFI_DEVICE_PATH_PROTOCOL *chosen;
+  CHECK(CaptureBootVariableStore()==0);CHECK(CheckStore(NULL,&chosen)==0);free(chosen);
+  EFI_FIRMWARE_VOLUME_HEADER *fv=(void*)LoadedFv;
+  UINTN secOffset=ALIGN_VALUE(fv->HeaderLength,8);
+  EFI_FFS_FILE_HEADER *sec=(void*)(LoadedFv+secOffset);
+  UINTN secSize=sec->Size[0]|((UINTN)sec->Size[1]<<8)|((UINTN)sec->Size[2]<<16);
+  const UINT32 request[8]={32,0,0x10005,8,0,0,0,0};
+  UINTN mailbox=0;unsigned matches=0;
+  for(UINTN i=secOffset+sizeof(*sec);i+sizeof(request)<=secOffset+secSize;i++) {
+    if(!memcmp(LoadedFv+i,request,sizeof(request))) {mailbox=i;matches++;}
+  }
+  CHECK(matches==1);
+  // Model the actual SEC mailbox response, not execution of firmware/hardware.
+  const UINT32 response[8]={32,0x80000000,0x10005,8,0x80000008,0,0x3fc00000,0};
+  memcpy(LoadedFv+mailbox,response,sizeof(response));
+  CHECK(FileVerify(&File,TEST_FV_OFFSET,(UINTN)LoadedFv,sizeof(LoadedFv))==EFI_DEVICE_ERROR);
+  CHECK(CheckStore(NULL,&chosen)==0);free(chosen);CHECK(WriteCalls==0);
+  UINTN dxeOffset=ALIGN_VALUE(secOffset+secSize,8);
+  Disk[TEST_FV_OFFSET+dxeOffset+sizeof(EFI_FFS_FILE_HEADER)+32]^=1;
+  CHECK(CheckStore(NULL,&chosen)!=0 && chosen==NULL);
+  Disk[TEST_FV_OFFSET+dxeOffset+sizeof(EFI_FFS_FILE_HEADER)+32]^=1;
+  Disk[TEST_NV_OFFSET+128]^=1;CHECK(CheckStore(NULL,&chosen)!=0 && chosen==NULL);
+  Disk[TEST_NV_OFFSET+128]^=1;CHECK(CheckStore(NULL,&chosen)==0);free(chosen);
+  DumpVars();StopFilePersistence(NULL,NULL); // clean store: no file writes
+  CHECK(WriteCalls==0);free(mBootVariableStore);
+  printf("PASS actual FD: %u checks; SEC mailbox at 0x%lx; old full-FV check rejects, fixed identity accepts; DXE/NV mismatches rejected, no writes\n",Checks,(unsigned long)(TEST_FV_OFFSET+mailbox));
+  return 0;
+}
+'''
+
+
+def run(name, text, args=()):
     with tempfile.TemporaryDirectory(prefix="rpi5-uefi-test-") as tmp:
         source = pathlib.Path(tmp) / (name + ".c")
         exe = source.with_suffix("")
@@ -288,7 +397,20 @@ def run(name, text):
         subprocess.run(["cc", "-std=c11", "-g", "-Wall", "-Wextra", "-Werror",
                         "-Wno-unused-parameter", "-ftrivial-auto-var-init=pattern",
                         "-fsanitize=address,undefined", str(source), "-o", str(exe)], check=True)
-        subprocess.run([str(exe)], check=True)
+        subprocess.run([str(exe), *args], check=True)
+
+
+def file_checker_source():
+    folder = PLATFORM / "Drivers/VarBlockServiceDxe"
+    io = (folder / "FileIo.c").read_text()
+    dxe = (folder / "VarBlockServiceDxe.c").read_text()
+    header = (folder / "VarBlockService.h").read_text()
+    struct = header[header.index("typedef struct {"):header.index("} EFI_FW_VOL_INSTANCE;") + len("} EFI_FW_VOL_INSTANCE;")]
+    declarations = struct + "\nstatic EFI_FW_VOL_INSTANCE *mFvInstance;\n" + dxe[dxe.index("STATIC VOID     *mBootVariableStore;"):dxe.index("EFI_STATUS\nCaptureBootVariableStore")]
+    chunks = [function(io,n) for n in ["FileVerify","FileVerifyFirmware","FileWrite","FileClose"]]
+    chunks += [function(dxe,n) for n in ["CaptureBootVariableStore","VerifyBootVariableStore","ReportSaveFailure","DoDump","DumpVars","StopFilePersistence"]]
+    chunks += [function(io,"CheckStore")]
+    return FILE_PREFIX + declarations + "\n".join(chunks)
 
 
 def main():
@@ -304,20 +426,19 @@ def main():
         assert image[0x003b0028:0x003b002c] == b"_FVH"
         assert int.from_bytes(image[0x003b0020:0x003b0028], "little") == 0x20000
         print(f"PASS packaged FD: {len(image)} bytes; full NV store present, reserved-tail omission accepted")
+        layout = "\n".join(f"#define {key} {value}" for key, value in {
+            "TEST_DISK_SIZE": "0x3e0000", "TEST_FV_SIZE": "0x390000",
+            "TEST_FV_OFFSET": "0x20000", "TEST_NV_SIZE": "0x20000",
+            "TEST_NV_OFFSET": "0x3b0000"}.items()) + "\n"
+        run("artifact", layout + file_checker_source() + FILE_ARTIFACT_MAIN,
+            [str(pathlib.Path(sys.argv[2]).resolve())])
         return
     rtc = no_includes((PLATFORM / "Library/RpiRtcLib/RpiRtcLib.c").read_text())
     timebase = no_includes((ROOT / "edk2/EmbeddedPkg/Library/TimeBaseLib/TimeBaseLib.c").read_text())
     run("rtc", RTC_PREFIX + timebase + rtc + RTC_MAIN)
     folder = PLATFORM / "Drivers/VarBlockServiceDxe"
-    io = (folder / "FileIo.c").read_text()
     dxe = (folder / "VarBlockServiceDxe.c").read_text()
-    header = (folder / "VarBlockService.h").read_text()
-    struct = header[header.index("typedef struct {"):header.index("} EFI_FW_VOL_INSTANCE;") + len("} EFI_FW_VOL_INSTANCE;")]
-    declarations = struct + "\nstatic EFI_FW_VOL_INSTANCE *mFvInstance;\n" + dxe[dxe.index("STATIC VOID     *mBootVariableStore;"):dxe.index("EFI_STATUS\nCaptureBootVariableStore")]
-    chunks = [function(io,n) for n in ["FileVerify","FileWrite","FileClose"]]
-    chunks += [function(dxe,n) for n in ["CaptureBootVariableStore","VerifyBootVariableStore","ReportSaveFailure","DoDump","DumpVars","StopFilePersistence"]]
-    chunks += [function(io,"CheckStore")]
-    run("settings", FILE_PREFIX + declarations + "\n".join(chunks) + FILE_MAIN)
+    run("settings", file_checker_source() + FILE_MAIN)
     assert "EVT_TIMER | EVT_NOTIFY_SIGNAL, TPL_CALLBACK" in dxe
     assert "2 * 10000000ULL" in dxe
     assert "gEfiEventExitBootServicesGuid" in dxe
