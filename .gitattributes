@@ -1,2 +1,3 @@
 # Patch payloads may intentionally contain CRLF hunks for CRLF-tracked sources.
 temporary-patches/**/*.patch whitespace=-trailing-space
+temporary-patches/edk2-platforms/0005-RPi5-RTC-and-settings-persistence.patch -text

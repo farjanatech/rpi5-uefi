@@ -12,6 +12,7 @@ on:
       - 'tests/wifi_pinctrl_test.py'
       - 'tests/rtc_settings_test.py'
       - 'docs/RTC-SETTINGS-exp0.4.md'
+      - '.gitattributes'
       - '.github/workflows/release.yml'
   workflow_dispatch:
 
@@ -56,6 +57,7 @@ jobs:
               tests/wifi_pinctrl_test.py|\
               tests/rtc_settings_test.py|\
               docs/RTC-SETTINGS-exp0.4.md|\
+              .gitattributes|\
               .github/workflows/release.yml|\
               .github/workflows/wifi-direct-sdio-ndis.yml)
                 ;;
