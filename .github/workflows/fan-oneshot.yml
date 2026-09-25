@@ -44,14 +44,17 @@ jobs:
             }
           }
           Copy-Item recovered-gui/Rpi5FanControl-ARM64.exe stage/
-          Copy-Item WindowsDriver/Rpi5FanInstaller/Install-OneShot.ps1 stage/
+          Copy-Item WindowsDriver/Rpi5FanInstaller/*.ps1 stage/
           Copy-Item WindowsDriver/Rpi5FanInstaller/README.md stage/
           @'
-          Raspberry Pi 5 Fan Control One-Shot Setup beta.2
+          Raspberry Pi 5 Fan Control One-Shot Setup beta.3
+
+          Device-detection fix: nameless devices with Present=True and Code 28
+          are present devices awaiting drivers, NOT missing firmware nodes.
+          Discovery now uses direct CIM inventory and approved ACPI hardware IDs.
 
           This offline installer includes the standalone GUI and the original exp.6
           Rpi5Temp and Rpi5Fan ARM64 driver packages (2026.8.18.6).
-
           Read and approve the driver/test-signing consent page. Already-active
           test signing and correctly installed healthy drivers are skipped.
           Test signing is a persistent system-wide Windows setting, not production
@@ -60,15 +63,11 @@ jobs:
           A restart may be required. Save work first; setup never forces a restart.
           After restarting, sign in to the same installing administrator account
           so the named continuation task can finish installation and verification.
-
-          Matching firmware must already expose ACPI RPI000F and RPI0010 without
-          Code 12. This installer does not install or flash UEFI firmware.
+          This installer does not install or flash UEFI firmware.
 
           Logs: Program Files\RPi5FanControl-OneShot\Setup\Logs.
-          On completion open the new Fan Control - Standalone desktop shortcut,
-          choose Automatic, and verify that the physical fan is spinning.
-
-          Experimental beta: the new installer still needs real-Pi hardware testing.
+          Open the Fan Control - Standalone shortcut, choose Automatic, and check
+          that the physical fan is spinning. Real-Pi installer testing is pending.
           '@ | Set-Content stage/INSTALL-FIRST.txt -Encoding ascii
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File WindowsDriver/Rpi5FanGui/Native/Build-Assets.ps1 -Source WindowsDriver/Rpi5FanGui/Native/assets/fan-user.png -Destination "$PWD/stage/fan.ico"
           if ($LASTEXITCODE -ne 0) { throw 'Icon generation failed' }
@@ -89,6 +88,7 @@ jobs:
           } finally { foreach ($path in $added) { Remove-Item $path -Force } }
           @{
             installer_source_commit='${{ github.sha }}'
+            installer_version='0.2.0-beta.3'
             gui_source_commit='5db165e2fb5ca40ace07fa105918a287a17a9e84'
             gui_run=36120135750
             driver_run=32164627975
@@ -97,19 +97,25 @@ jobs:
             driver_artifact_zip_sha256='b7ecc6c7205940e43c956dcdeb8bd1366ff4b3ec99b3d8e685e5d04ab800beb2'
             hardware_installer_tested=$false
           } | ConvertTo-Json | Set-Content stage/PROVENANCE.json -Encoding utf8
-      - name: Windows PowerShell 5.1 parser and policy tests
+      - name: Windows PowerShell 5.1 parser, policy and device-regression tests
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $tokens=$null; $errors=$null
-          $ast=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'stage/Install-OneShot.ps1').Path,[ref]$tokens,[ref]$errors)
-          if ($errors.Count) { throw ($errors | Out-String) }
+          foreach ($script in Get-ChildItem stage/*.ps1) {
+            $tokens=$null; $errors=$null
+            $null=[Management.Automation.Language.Parser]::ParseFile($script.FullName,[ref]$tokens,[ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File stage/Install-OneShot.ps1 -Phase SelfTest -PackageRoot "$PWD/stage" -ResultFile "$PWD/dist/PolicyTests-x64.txt"
           if ($LASTEXITCODE -ne 0) { throw 'Policy/payload tests failed' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File stage/Test-DeviceDetection.ps1 -Root "$PWD/stage" -ResultFile "$PWD/dist/DeviceDetectionTests-x64.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'Device-detection regression tests failed' }
+          $tokens=$null; $errors=$null
+          $ast=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'stage/Install-OneShot.ps1').Path,[ref]$tokens,[ref]$errors)
           $f=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-BcdSigning'},$true)
           Invoke-Expression $f.Extent.Text
           $state=Get-BcdSigning
-          "Read-only BCD query passed: current entry $($state.Id), configured=$($state.Enabled)" | Add-Content dist/PolicyTests-x64.txt
+          "Read-only BCD query passed: configured=$($state.Enabled)" | Add-Content dist/PolicyTests-x64.txt
       - name: Compile single offline installer
         shell: pwsh
         run: |
@@ -122,7 +128,7 @@ jobs:
           $exe=Get-Item dist/Rpi5FanControl-OneShot-ARM64-Setup.exe
           if ($exe.Length -gt 20000000) { throw 'Installer exceeds 20 MB' }
           Copy-Item stage/README.md,stage/INSTALL-FIRST.txt,stage/PROVENANCE.json dist/
-          @("Source: ${{ github.sha }}", "Setup bytes: $($exe.Length)", "Setup SHA256: $((Get-FileHash $exe.FullName -Algorithm SHA256).Hash)", "Compiler: $iscc", 'Original driver binaries were not rebuilt or re-signed.', 'Real-Pi installer testing is pending.') | Set-Content dist/BuildInfo.txt
+          @("Source: ${{ github.sha }}", 'Version: 0.2.0-beta.3', "Setup bytes: $($exe.Length)", "Setup SHA256: $((Get-FileHash $exe.FullName -Algorithm SHA256).Hash)", "Compiler: $iscc", 'Original driver binaries were not rebuilt or re-signed.', 'Real-Pi installer testing is pending.') | Set-Content dist/BuildInfo.txt
           Get-ChildItem dist -File | Where-Object Name -ne SHA256SUMS.txt | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
           Get-Content dist/BuildInfo.txt
       - uses: actions/upload-artifact@v4
@@ -150,12 +156,14 @@ jobs:
         with:
           name: Rpi5FanControl-OneShot-testpayload
           path: stage
-      - name: Native ARM64 policy tests and compiled installer preflight refusal
+      - name: Native ARM64 policy, device-regression and compiled-preflight tests
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           & "$env:windir/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File stage/Install-OneShot.ps1 -Phase SelfTest -PackageRoot "$PWD/stage" -ResultFile "$PWD/dist/PolicyTests-ARM64.txt"
           if ($LASTEXITCODE -ne 0) { throw 'ARM64 policy/payload tests failed' }
+          & "$env:windir/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File stage/Test-DeviceDetection.ps1 -Root "$PWD/stage" -ResultFile "$PWD/dist/DeviceDetectionTests-ARM64.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'ARM64 device-detection regression tests failed' }
           $tokens=$null; $errors=$null
           $ast=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'stage/Install-OneShot.ps1').Path,[ref]$tokens,[ref]$errors)
           $f=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-BcdSigning'},$true)
@@ -183,13 +191,14 @@ jobs:
           if ((& bcdedit.exe /enum '{current}' /v | Out-String) -ne $bcdBefore) { throw 'Preflight unexpectedly changed BCD' }
           if (Get-ScheduledTask -TaskName RPi5Fan-OneShot-beta2-Resume -ErrorAction SilentlyContinue) { throw 'Unexpected resume task after preflight rejection' }
           if (!(Select-String -Path $log -SimpleMatch 'Required present ACPI device not found' -Quiet)) { throw 'Setup failed for a different reason; inspect preflight log' }
-          'PASS: compiled installer ran on Windows ARM64 and refused missing Pi ACPI devices before application/BCD/task changes. Physical Pi installation and reboot continuation are NOT tested by this check.' | Set-Content dist/ARM64-Installer-Tests.txt
+          'PASS: compiled beta.3 installer ran on Windows ARM64 and refused genuinely absent Pi ACPI devices before application/BCD/task changes. Physical Pi installation and reboot continuation are NOT tested by this check.' | Set-Content dist/ARM64-Installer-Tests.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Rpi5FanControl-OneShot-ARM64-tests
           path: |
             dist/PolicyTests-ARM64.txt
+            dist/DeviceDetectionTests-ARM64.txt
             dist/ARM64-Installer-Preflight.log
             dist/ARM64-Installer-Tests.txt
             dist/ARM64-Timeout-Processes.txt

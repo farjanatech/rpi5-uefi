@@ -8,8 +8,9 @@
 [Setup]
 AppId={{C649BA4E-F8E2-4FD1-8E49-53D9F573A202}
 AppName=Raspberry Pi 5 Fan Control
-AppVersion=0.2.0-beta.2
-AppVerName=Raspberry Pi 5 Fan Control One-Shot Setup 0.2.0-beta.2
+AppVersion=0.2.0-beta.3
+VersionInfoVersion=0.2.0.3
+AppVerName=Raspberry Pi 5 Fan Control One-Shot Setup 0.2.0-beta.3
 AppPublisher=RPi5 UEFI Community
 DefaultDirName={autopf}\RPi5FanControl-OneShot
 DisableDirPage=yes
@@ -33,9 +34,10 @@ CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
 [Files]
+Source: "{#PayloadDir}\DeviceDetection.ps1"; DestDir: "{app}\Setup"; Flags: ignoreversion
+Source: "{#PayloadDir}\Install-OneShot.ps1"; DestDir: "{app}\Setup"; Flags: ignoreversion
 Source: "{#PayloadDir}\Rpi5FanControl-ARM64.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\Drivers\*"; DestDir: "{app}\Drivers"; Flags: recursesubdirs createallsubdirs ignoreversion
-Source: "{#PayloadDir}\Install-OneShot.ps1"; DestDir: "{app}\Setup"; Flags: ignoreversion
 Source: "{#PayloadDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\PROVENANCE.json"; DestDir: "{app}\Setup"; Flags: ignoreversion
 Source: "{#PayloadDir}\INSTALL-FIRST.txt"; DestDir: "{app}"; Flags: ignoreversion
@@ -89,6 +91,7 @@ begin
   if CompareText(WizardDirValue, ExpandConstant('{autopf}\RPi5FanControl-OneShot')) <> 0 then begin
     Result := 'This installer uses a fixed protected Program Files directory. Remove any /DIR override.'; Exit;
   end;
+  ExtractTemporaryFile('DeviceDetection.ps1');
   ExtractTemporaryFile('Install-OneShot.ps1');
   ScriptPath := ExpandConstant('{tmp}\Install-OneShot.ps1');
   ResultPath := ExpandConstant('{tmp}\preflight-result.txt');
@@ -97,7 +100,10 @@ begin
     '" -Phase Preflight -PackageRoot "' + WizardDirValue + '" -ResultFile "' + ResultPath + '"';
   if not Exec(PowerShell, Args, '', SW_HIDE, ewWaitUntilTerminated, Code) then
     Result := 'Could not start native Windows PowerShell for read-only preflight checks.'
-  else if Code <> 0 then Result := ReadResult(ResultPath);
+  else begin
+    Log(ReadResult(ResultPath));
+    if Code <> 0 then Result := ReadResult(ResultPath);
+  end;
 end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var Code: Integer; Args, ResultPath: String;
@@ -119,7 +125,6 @@ function InstallationReady: Boolean;
 begin Result := not DriverFailed and not RestartPending; end;
 function NeedRestart: Boolean;
 begin
-  { Silent automation receives 3010 and must arrange its own approved restart. }
   Result := RestartPending and not WizardSilent;
 end;
 procedure CurPageChanged(CurPageID: Integer);

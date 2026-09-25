@@ -11,6 +11,7 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 $Version = '2026.8.18.6'
 $Provider = 'RPi5 UEFI Community'
+# Keep the existing task name for safe continuation/cleanup of earlier installs.
 $TaskName = 'RPi5Fan-OneShot-beta2-Resume'
 $Transcript = $false
 $Mutex = $null
@@ -107,17 +108,7 @@ function Test-Payload {
     Write-Host 'All nine payload files match the original driver and GUI SHA-256 pins.'
 }
 function Get-Selected([string]$Id) {
-    $devices = @(Get-PnpDevice -PresentOnly -InstanceId $Id -ErrorAction SilentlyContinue)
-    if ($devices.Count -ne 1) { throw "Required present ACPI device not found: $Id. Use matching split-resource Pi 5 UEFI; this installer does not flash firmware." }
-    $props = @(Get-PnpDeviceProperty -InstanceId $Id -ErrorAction Stop)
-    $values = @{}
-    foreach ($prop in $props) { $values[$prop.KeyName] = $prop.Data }
-    if (!$values.ContainsKey('DEVPKEY_Device_ProblemCode')) { throw "Cannot determine the problem code for $Id" }
-    [pscustomobject]@{
-        Id=$Id; Problem=[int]$values['DEVPKEY_Device_ProblemCode']; Status=$devices[0].Status
-        Version=[string]$values['DEVPKEY_Device_DriverVersion']; Provider=[string]$values['DEVPKEY_Device_DriverProvider']
-        Inf=[string]$values['DEVPKEY_Device_DriverInfPath']
-    }
+    Get-SelectedCimDevice -Id $Id
 }
 function Get-BcdSigning {
     # /v emits GUIDs, so no localized Yes/No text needs to be parsed.
@@ -129,8 +120,6 @@ function Get-BcdSigning {
     $class.psbase.Scope.Options.EnablePrivileges = $true
     $opened = $class.OpenStore('')
     if (!$opened.ReturnValue) { throw 'Cannot open the system BCD store.' }
-    # OpenStore returns an embedded ManagementBaseObject (data only in PS 5.1).
-    # Rebind by documented keys to get a live instance with callable methods.
     $store = [wmi]'root\wmi:BcdStore.FilePath=""'
     $store.psbase.Scope.Options.EnablePrivileges = $true
     function Read-Boolean($Store,[string]$ObjectId,[int]$Depth) {
@@ -174,8 +163,8 @@ function Get-Preflight {
     Initialize-Native
     if ([Rpi5OneShotNative]::Machine() -ne 0xAA64 -or [IntPtr]::Size -ne 8) { throw 'This package requires Windows 11 ARM64 and native 64-bit Windows PowerShell.' }
     if ([int](Get-CimInstance Win32_OperatingSystem).BuildNumber -lt 22000) { throw 'Windows 11 (build 22000 or newer) is required.' }
-    $temp = Get-Selected 'ACPI\RPI0010\0'
-    $fan = Get-Selected 'ACPI\RPI000F\0'
+    $temp = Get-Selected 'RPI0010'
+    $fan = Get-Selected 'RPI000F'
     foreach ($device in @($temp,$fan)) {
         $plan = Test-DriverPlan $device.Version $device.Provider $device.Problem
         Write-Host "$($device.Id): version=$($device.Version) problem=$($device.Problem) action=$plan"
@@ -278,6 +267,7 @@ function Invoke-SelfTest {
 $exitCode = 0
 try {
     $PackageRoot = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\')
+    . (Join-Path $PSScriptRoot 'DeviceDetection.ps1')
     if ($Phase -eq 'SelfTest') { Invoke-SelfTest; exit 0 }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $admin = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -286,7 +276,11 @@ try {
     $Mutex = [Threading.Mutex]::new($false,'Global\RPi5Fan-OneShot-Install')
     try { $OwnMutex=$Mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $OwnMutex=$true }
     if (!$OwnMutex) { throw 'Another RPi5 fan installation is already running.' }
-    if ($Phase -eq 'Preflight') { $null=Get-Preflight; Write-Result 'Preflight passed. Matching ACPI devices are present; boot-policy and selected-driver checks passed.'; exit 0 }
+    if ($Phase -eq 'Preflight') {
+        $check=Get-Preflight
+        Write-Result "Preflight passed. Temperature: $($check.Temp.Id), Code $($check.Temp.Problem). Fan: $($check.Fan.Id), Code $($check.Fan.Problem). Code 28 is accepted as a present device awaiting driver installation. Test-signing plan: $($check.Action)."
+        exit 0
+    }
     if (!$Consent) { throw 'Explicit test-signing/certificate consent is required.' }
     $expectedRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'RPi5FanControl-OneShot'
     if ($PackageRoot -ne $expectedRoot) { throw 'Driver installation must run from the protected Program Files installation directory.' }
@@ -295,7 +289,7 @@ try {
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     Start-Transcript -Path (Join-Path $logDir ('install-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')) -Force | Out-Null
     $Transcript=$true
-    Write-Host "OneShot beta.2 Phase=$Phase; identity=$($identity.User.Value)"
+    Write-Host "OneShot beta.3 Phase=$Phase; identity=$($identity.User.Value)"
     $statePath = Join-Path $PackageRoot 'Setup\State.json'
     if (Test-Path $statePath) {
         $saved=Get-Content $statePath -Raw | ConvertFrom-Json
@@ -324,8 +318,8 @@ try {
             if ($LASTEXITCODE -ne 0 -or !(Get-BcdSigning).Enabled) { throw 'Could not preserve test signing for the next boot.' }
         } else { Write-Host 'SKIP: test signing is already configured AND active; BCD not changed.' }
         Import-DriverCertificate
-        Install-Device 'ACPI\RPI0010\0' 'Rpi5Temp'
-        if (!$script:RestartNeeded) { Install-Device 'ACPI\RPI000F\0' 'Rpi5Fan' }
+        Install-Device 'RPI0010' 'Rpi5Temp'
+        if (!$script:RestartNeeded) { Install-Device 'RPI000F' 'Rpi5Fan' }
         if ($script:RestartNeeded) {
             if ($script:State.DriverRestart -and $script:State.DriverRestart -ne $boot) { throw 'Driver installation still requests a reboot after the driver restart. Stopping automatic continuation; check the log.' }
             $script:State.DriverRestart=$boot; Register-Resume
@@ -352,7 +346,11 @@ try {
     if ($Phase -ne 'Preflight' -and $Phase -ne 'SelfTest' -and $OwnMutex) {
         try { Remove-Resume } catch { Write-Warning 'Could not remove the resume task; remove RPi5Fan-OneShot-beta2-Resume in Task Scheduler.' }
     }
-    Write-Result ("INSTALLATION NOT COMPLETE: " + $_.Exception.Message + "`r`nNo forced removal of existing drivers, firmware update, Secure Boot change, BitLocker suspension, or Memory Integrity change was performed. Review Setup\Logs in the installation folder. A previously completed BCD/certificate/driver change is not automatically rolled back.")
+    if ($Phase -eq 'Preflight') {
+        Write-Result ("PREFLIGHT STOPPED: " + $_.Exception.Message + "`r`nNo driver, certificate or boot-policy changes were made by this preflight. Details are also recorded in the Inno Setup log in your Windows temporary folder.")
+    } else {
+        Write-Result ("INSTALLATION NOT COMPLETE: " + $_.Exception.Message + "`r`nNo forced removal of existing drivers, firmware update, Secure Boot change, BitLocker suspension, or Memory Integrity change was performed. Review Setup\Logs in the installation folder. A previously completed BCD/certificate/driver change is not automatically rolled back.")
+    }
 } finally {
     if ($Transcript) { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null }
     if ($OwnMutex) { $Mutex.ReleaseMutex() }
