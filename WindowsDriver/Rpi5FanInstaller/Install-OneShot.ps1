@@ -129,12 +129,19 @@ function Get-BcdSigning {
     $class.psbase.Scope.Options.EnablePrivileges = $true
     $opened = $class.OpenStore('')
     if (!$opened.ReturnValue) { throw 'Cannot open the system BCD store.' }
-    $store = $opened.Store
+    # OpenStore returns an embedded ManagementBaseObject (data only in PS 5.1).
+    # Rebind by documented keys to get a live instance with callable methods.
+    $store = [wmi]'root\wmi:BcdStore.FilePath=""'
+    $store.psbase.Scope.Options.EnablePrivileges = $true
     function Read-Boolean($Store,[string]$ObjectId,[int]$Depth) {
         if ($Depth -gt 8) { throw 'Unexpected BCD inheritance depth.' }
-        $object = $Store.OpenObject($ObjectId)
-        if (!$object.ReturnValue) { throw "Cannot read BCD object $ObjectId" }
-        $elements = $object.Object.EnumerateElements()
+        if ($ObjectId -notmatch '(?i)^\{[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\}$') { throw 'Invalid BCD object identifier.' }
+        $openedObject = $Store.OpenObject($ObjectId)
+        if (!$openedObject.ReturnValue) { throw "Cannot read BCD object $ObjectId" }
+        $objectPath = 'root\wmi:BcdObject.Id="' + $ObjectId + '",StoreFilePath=""'
+        $object = [wmi]$objectPath
+        $object.psbase.Scope.Options.EnablePrivileges = $true
+        $elements = $object.EnumerateElements()
         if (!$elements.ReturnValue) { throw 'Cannot enumerate BCD elements.' }
         $own = @($elements.Elements | Where-Object { $_.Type -eq 0x16000049 })
         if ($own.Count) { return [bool]$own[0].Boolean }
@@ -304,7 +311,6 @@ try {
     if ($preflight.Action -in @('Restart','EnableRestart')) {
         if ($script:State.SigningRestart -and $script:State.SigningRestart -ne $boot) { throw 'Test signing is still inactive after restarting. Setup stopped instead of repeatedly rebooting or disabling security features.' }
         $script:State.SigningRestart=$boot
-        # Register recovery before BCD changes; remove it if the BCD operation fails.
         Register-Resume
         if ($preflight.Action -eq 'EnableRestart') {
             & "$env:windir\System32\bcdedit.exe" /set $preflight.BcdId testsigning on | Out-Host
