@@ -14,6 +14,7 @@ AppPublisher=RPi5 UEFI Community
 DefaultDirName={autopf}\RPi5FanControl-OneShot
 DisableDirPage=yes
 DisableProgramGroupPage=yes
+DisableStartupPrompt=yes
 UsePreviousAppDir=no
 DefaultGroupName=Raspberry Pi 5 Fan Control
 PrivilegesRequired=admin
@@ -39,8 +40,8 @@ Source: "{#PayloadDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\PROVENANCE.json"; DestDir: "{app}\Setup"; Flags: ignoreversion
 Source: "{#PayloadDir}\INSTALL-FIRST.txt"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
-Name: "{commondesktop}\Raspberry Pi 5 Fan Control"; Filename: "{app}\Rpi5FanControl-ARM64.exe"; WorkingDir: "{app}"
-Name: "{commonprograms}\Raspberry Pi 5 Fan Control\Fan Control"; Filename: "{app}\Rpi5FanControl-ARM64.exe"; WorkingDir: "{app}"
+Name: "{commondesktop}\Raspberry Pi 5 Fan Control - Standalone"; Filename: "{app}\Rpi5FanControl-ARM64.exe"; WorkingDir: "{app}"
+Name: "{commonprograms}\Raspberry Pi 5 Fan Control\Fan Control - Standalone"; Filename: "{app}\Rpi5FanControl-ARM64.exe"; WorkingDir: "{app}"
 Name: "{commonprograms}\Raspberry Pi 5 Fan Control\Installation instructions"; Filename: "{app}\INSTALL-FIRST.txt"
 [Run]
 Filename: "{app}\Rpi5FanControl-ARM64.exe"; Description: "Open Fan Control"; Flags: postinstall nowait skipifsilent; Check: InstallationReady
@@ -91,6 +92,7 @@ begin
   ExtractTemporaryFile('Install-OneShot.ps1');
   ScriptPath := ExpandConstant('{tmp}\Install-OneShot.ps1');
   ResultPath := ExpandConstant('{tmp}\preflight-result.txt');
+  DeleteFile(ResultPath);
   Args := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath +
     '" -Phase Preflight -PackageRoot "' + WizardDirValue + '" -ResultFile "' + ResultPath + '"';
   if not Exec(PowerShell, Args, '', SW_HIDE, ewWaitUntilTerminated, Code) then
@@ -102,6 +104,7 @@ var Code: Integer; Args, ResultPath: String;
 begin
   if CurStep = ssPostInstall then begin
     ResultPath := ExpandConstant('{app}\Setup\LastResult.txt');
+    DeleteFile(ResultPath);
     Args := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Setup\Install-OneShot.ps1') +
       '" -Phase Install -PackageRoot "' + ExpandConstant('{app}') + '" -ResultFile "' + ResultPath + '" -Consent';
     if not Exec(PowerShell, Args, '', SW_HIDE, ewWaitUntilTerminated, Code) then Code := 1;
@@ -115,7 +118,10 @@ end;
 function InstallationReady: Boolean;
 begin Result := not DriverFailed and not RestartPending; end;
 function NeedRestart: Boolean;
-begin Result := RestartPending; end;
+begin
+  { Silent automation receives 3010 and must arrange its own approved restart. }
+  Result := RestartPending and not WizardSilent;
+end;
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if CurPageID = wpFinished then begin
