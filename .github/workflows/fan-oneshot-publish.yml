@@ -1,0 +1,217 @@
+name: Publish Fan OneShot beta.2
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/fan-oneshot-installer]
+    paths: ['.github/workflows/fan-oneshot-publish.yml']
+permissions: {}
+concurrency:
+  group: publish-rpi5-fan-gui-v0.2.0-beta.2
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'farjanatech/rpi5-uefi' && github.ref == 'refs/heads/feat/fan-oneshot-installer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: farjanatech/rpi5-uefi
+    steps:
+      - name: Promote the exact tested installer and verify published bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, shutil, subprocess, zipfile
+          from pathlib import Path
+          REPO = os.environ['GH_REPO']
+          RUN = 36125847705
+          SHA = '949027e8eb864c030d84c0c651621c3ba50a4f26'
+          TAG = 'rpi5-fan-gui-v0.2.0-beta.2'
+          NAME = 'Rpi5FanControl-OneShot-ARM64-Setup.exe'
+          EXE_SIZE = 2281112
+          EXE_HASH = 'ef198f7ff66b86568186a30294b5c991591999a414d0e8bc2cfe088c42cde463'
+          TITLE = 'Raspberry Pi 5 Fan Control v0.2.0-beta.2 - One-Shot Installer'
+          def gh(*args, missing_ok=False):
+              p = subprocess.run(['gh', *args], text=True, capture_output=True)
+              if p.returncode:
+                  if missing_ok and 'HTTP 404' in p.stderr:
+                      return None
+                  raise RuntimeError(p.stderr or p.stdout or 'GitHub CLI failed')
+              return p.stdout
+          def api(path, missing_ok=False):
+              text = gh('api', path, missing_ok=missing_ok)
+              return None if text is None else json.loads(text)
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          def get_release():
+              # Draft releases may not resolve through the tag endpoint yet.
+              for page in range(1, 11):
+                  entries = api(f'repos/{REPO}/releases?per_page=100&page={page}')
+                  matches = [r for r in entries if r['tag_name'] == TAG]
+                  if len(matches) > 1:
+                      raise RuntimeError('Multiple matching release drafts; refusing ambiguous publication')
+                  if matches:
+                      return api(f"repos/{REPO}/releases/{matches[0]['id']}")
+                  if len(entries) < 100:
+                      return None
+              raise RuntimeError('Release listing exceeded the bounded search')
+          run = api(f'repos/{REPO}/actions/runs/{RUN}')
+          if (run['head_sha'] != SHA or run['status'] != 'completed' or run['conclusion'] != 'success'
+              or run['event'] != 'push' or run['path'] != '.github/workflows/fan-oneshot.yml'
+              or run['head_branch'] != 'feat/fan-oneshot-installer'):
+              raise RuntimeError('Pinned build is not the expected successful installer build')
+          jobs = api(f'repos/{REPO}/actions/runs/{RUN}/jobs?per_page=100')['jobs']
+          if not {'build','arm64-tests'}.issubset({j['name'] for j in jobs if j['conclusion'] == 'success'}):
+              raise RuntimeError('Both build and Windows ARM64 checks must pass')
+          artifacts = api(f'repos/{REPO}/actions/runs/{RUN}/artifacts?per_page=100')['artifacts']
+          pins = {
+              'Rpi5FanControl-OneShot-build': (10859424328, 'sha256:75992ea78c316ff716087097112bcba2ed24969fd6931c5be8cbc8bd3f3aa70e'),
+              'Rpi5FanControl-OneShot-ARM64-tests': (10859168187, 'sha256:0ff7d519eac98951c77c08340dc18cc63d77331228dd97bea2015b0b41f4a298'),
+          }
+          root = Path('release-work'); root.mkdir()
+          for name, (identifier, expected_digest) in pins.items():
+              found = [a for a in artifacts if a['name'] == name]
+              if len(found) != 1 or found[0]['id'] != identifier or found[0].get('digest') != expected_digest or found[0]['expired']:
+                  raise RuntimeError(f'Unexpected artifact identity: {name}')
+              destination = root / ('build' if name.endswith('-build') else 'tests')
+              gh('run', 'download', str(RUN), '--repo', REPO, '--name', name, '--dir', str(destination))
+          build = root / 'build'; tests = root / 'tests'
+          exe = build / NAME
+          if exe.stat().st_size != EXE_SIZE or digest(exe) != EXE_HASH or EXE_SIZE > 20000000:
+              raise RuntimeError('Setup binary differs from the checked build')
+          for line in (build / 'SHA256SUMS.txt').read_text(encoding='utf-8-sig').splitlines():
+              expected, filename = line.split('  ', 1)
+              if Path(filename).name != filename or digest(build / filename) != expected:
+                  raise RuntimeError(f'Build file failed hash validation: {filename}')
+          provenance = json.loads((build / 'PROVENANCE.json').read_text(encoding='utf-8-sig'))
+          if provenance['installer_source_commit'] != SHA or provenance['hardware_installer_tested'] is not False:
+              raise RuntimeError('Unexpected installer provenance')
+          if provenance['driver_run'] != 32164627975 or provenance['gui_run'] != 36120135750:
+              raise RuntimeError('Unexpected component provenance')
+          for path in (build/'PolicyTests-x64.txt', tests/'PolicyTests-ARM64.txt', tests/'ARM64-Installer-Tests.txt'):
+              if not path.read_text(encoding='utf-8-sig').startswith('PASS:'):
+                  raise RuntimeError(f'Missing passing check: {path.name}')
+          preflight_log = (tests/'ARM64-Installer-Preflight.log').read_text(encoding='utf-8-sig')
+          if 'Required present ACPI device not found' not in preflight_log:
+              raise RuntimeError('The compiled installer did not exercise the expected read-only hardware rejection')
+          notes = f'''## One-Shot offline installer - GUI and both required drivers
+
+          **Download `{NAME}` and run it on your Raspberry Pi 5 running Windows 11 ARM64.**
+          The installer is **{EXE_SIZE:,} bytes (2.28 MB)**. It embeds the standalone GUI, the original
+          exp.6 Rpi5Temp and Rpi5Fan driver packages, and their original public test certificate.
+          No separate driver download is needed. The GUI and kernel-driver binaries are unchanged.
+
+          ### What setup does
+          - Checks the Pi ACPI devices and selected drivers before installation.
+          - Checks test signing in both BCD and the running Windows kernel. When already configured
+            **and active**, it skips the BCD change. When off, it configures test signing after the
+            consent and security checks. A configured-but-not-active setting requires a restart first.
+          - Installs the temperature driver first and fan driver second. It skips a healthy, correctly
+            selected bundled-version driver; existing newer or unknown-provider drivers are not force-replaced.
+          - Adds the original test certificate only where missing, creates desktop/Start-menu shortcuts,
+            and verifies live fan API v2 hardware readiness and valid temperature telemetry before reporting success.
+
+          ### Use
+          1. Close the old Fan Control GUI and run the setup EXE. Approve administrator access and read
+             the driver/test-signing consent page.
+          2. When asked to restart, save your work and restart Windows. Sign in to the **same installing
+             administrator account** so setup continues automatically. Windows may require an additional
+             driver-start restart; setup does not repeatedly reboot on failure.
+          3. Open **Raspberry Pi 5 Fan Control - Standalone** from the desktop. Select **Automatic** for
+             temperature-based cooling, then verify the actual cooler is spinning. The GUI need not remain open
+             for the driver's automatic mode. Existing manual/automatic mode is not silently changed by setup.
+
+          ### Requirements and security
+          Compatible split-resource UEFI must already expose `ACPI\\RPI000F\\0` and `ACPI\\RPI0010\\0`
+          without Code 12. **This installer does not flash or update UEFI.**
+          Test signing is a persistent, system-wide Windows boot-policy change that permits test-signed
+          drivers and may display a Test Mode watermark. The wizard requests explicit consent.
+          It does not disable Secure Boot, Memory Integrity, antivirus or integrity checking, and it does
+          not suspend BitLocker/device encryption. Blocking or unknown security states produce an explanation
+          instead of being silently bypassed. The setup EXE and GUI are unsigned; the original kernel packages
+          are signed with the project test certificate, not a Microsoft production driver signature.
+
+          Logs: `%ProgramFiles%\\RPi5FanControl-OneShot\\Setup\\Logs`.
+          Latest result: `Setup\\LastResult.txt` inside that installation folder.
+          The named continuation task is removed after success or failure. Uninstall removes the GUI/setup
+          and continuation task, but deliberately leaves installed drivers, test certificate and test signing
+          in place; logs may remain. Review those separately when retiring the installation.
+
+          ### Verification and limits
+          Source: `{SHA}`.
+          [Successful build and Windows ARM64 checks](https://github.com/{REPO}/actions/runs/{RUN}).
+          Validation includes original payload hashes and signatures, 31 policy checks on each of Windows
+          x64 and ARM64, read-only BCD/integrity queries, and the compiled installer's rejection of a Windows
+          ARM64 machine lacking Pi ACPI devices before application/BCD/task changes.
+          **Fresh installation, reboot continuation and cooling have not been tested on a physical Pi for
+          this new installer. This is an experimental prerelease, not hardware certification.**
+
+          Bundled drivers: original exp.6 version `2026.8.18.6`, recovered from build `32164627975`;
+          not rebuilt or re-signed. GUI: the same 375,296-byte ARM64 application from the previous GUI-only release.
+          The ZIP contains the same installer with instructions, provenance and automated test records.
+          SHA-256 of the setup EXE: `{EXE_HASH}`.
+
+          References: [Microsoft TESTSIGNING documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option).
+          The earlier GUI-only beta.1 release and firmware releases remain unchanged.
+          '''
+          notes = '\n'.join(line[10:] if line.startswith('          ') else line for line in notes.splitlines()).strip()+'\n'
+          notes_path=root/'release-notes.md'; notes_path.write_text(notes,encoding='utf-8')
+          dist=root/'dist'; dist.mkdir()
+          shutil.copyfile(exe,dist/NAME)
+          (dist/'INSTALL-FIRST.txt').write_bytes((build/'INSTALL-FIRST.txt').read_bytes())
+          members={NAME:exe.read_bytes(),'RELEASE-NOTES.md':notes.encode('utf-8')}
+          for filename in ('README.md','BuildInfo.txt','PROVENANCE.json','PolicyTests-x64.txt','INSTALL-FIRST.txt'):
+              members[filename]=(build/filename).read_bytes()
+          for filename in ('PolicyTests-ARM64.txt','ARM64-Installer-Preflight.log','ARM64-Installer-Tests.txt'):
+              members['Tests/'+filename]=(tests/filename).read_bytes()
+          members['SHA256SUMS.txt']=''.join(f'{hashlib.sha256(content).hexdigest()}  {name}\n' for name,content in sorted(members.items())).encode()
+          with zipfile.ZipFile(dist/'Rpi5FanControl-OneShot-ARM64.zip','w',compression=zipfile.ZIP_DEFLATED) as z:
+              for name,content in sorted(members.items()):
+                  info=zipfile.ZipInfo(name,(2026,9,25,0,0,0)); info.compress_type=zipfile.ZIP_DEFLATED
+                  info.external_attr=0o100644 << 16; z.writestr(info,content)
+          (dist/'SHA256SUMS.txt').write_text(''.join(f'{digest(p)}  {p.name}\n' for p in sorted(dist.iterdir()) if p.is_file()),encoding='utf-8')
+          assets={p.name:p for p in dist.iterdir() if p.is_file()}
+          release=get_release()
+          tag=api(f'repos/{REPO}/git/ref/tags/{TAG}',missing_ok=True)
+          if tag and (tag['object']['type']!='commit' or tag['object']['sha']!=SHA):
+              raise RuntimeError('Existing tag is different; refusing to move it')
+          if release is None:
+              gh('release','create',TAG,'--repo',REPO,'--target',SHA,'--draft','--prerelease','--latest=false','--title',TITLE,'--notes-file',str(notes_path))
+              release=get_release()
+          if release is None or release['target_commitish']!=SHA or not release['prerelease']:
+              raise RuntimeError('Release provenance/type mismatch')
+          known={a['name']:a for a in release['assets']}
+          if set(known)-set(assets):
+              raise RuntimeError('Unexpected existing release assets; refusing to modify')
+          for name,path in sorted(assets.items()):
+              if name in known:
+                  if known[name]['size']!=path.stat().st_size or known[name].get('digest')!='sha256:'+digest(path):
+                      raise RuntimeError(f'Existing asset differs: {name}; no overwrite performed')
+              elif release['draft']:
+                  gh('release','upload',TAG,str(path),'--repo',REPO)
+              else:
+                  raise RuntimeError('A published release is incomplete; refusing to mutate it')
+          verification=root/'downloaded'
+          gh('release','download',TAG,'--repo',REPO,'--dir',str(verification))
+          for name,path in assets.items():
+              if digest(verification/name)!=digest(path):
+                  raise RuntimeError(f'Release download verification failed: {name}')
+          if release['draft']:
+              gh('release','edit',TAG,'--repo',REPO,'--draft=false','--prerelease','--latest=false')
+          published=api(f"repos/{REPO}/releases/{release['id']}")
+          if published['draft'] or not published['prerelease'] or len(published['assets'])!=len(assets):
+              raise RuntimeError('Release publication not confirmed')
+          tag=api(f'repos/{REPO}/git/ref/tags/{TAG}')
+          if tag['object']['type']!='commit' or tag['object']['sha']!=SHA:
+              raise RuntimeError('Published tag source differs from tested installer source')
+          print(published['html_url'])
+          print(f'Installer: {EXE_SIZE} bytes; SHA256 {EXE_HASH}')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as f:
+              f.write(f"## One-Shot installer beta.2 published\n\n{published['html_url']}\n\n")
+              f.write(f'Setup EXE: {EXE_SIZE:,} bytes. All uploaded assets were downloaded back and SHA-256 checked before publication.\n\n')
+              f.write('Existing original drivers included. Physical Pi installer/reboot testing is still pending.\n')
+          PY
