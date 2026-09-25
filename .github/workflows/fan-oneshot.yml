@@ -65,8 +65,8 @@ jobs:
           Code 12. This installer does not install or flash UEFI firmware.
 
           Logs: Program Files\RPi5FanControl-OneShot\Setup\Logs.
-          On completion open the desktop shortcut, choose Automatic for automatic
-          cooling, and verify that the physical fan is spinning.
+          On completion open the new Fan Control - Standalone desktop shortcut,
+          choose Automatic, and verify that the physical fan is spinning.
 
           Experimental beta: the new installer still needs real-Pi hardware testing.
           '@ | Set-Content stage/INSTALL-FIRST.txt -Encoding ascii
@@ -106,7 +106,6 @@ jobs:
           if ($errors.Count) { throw ($errors | Out-String) }
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File stage/Install-OneShot.ps1 -Phase SelfTest -PackageRoot "$PWD/stage" -ResultFile "$PWD/dist/PolicyTests-x64.txt"
           if ($LASTEXITCODE -ne 0) { throw 'Policy/payload tests failed' }
-          # Exercise the locale-independent BCD reader without executing installation.
           $f=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-BcdSigning'},$true)
           Invoke-Expression $f.Extent.Text
           $state=Get-BcdSigning
@@ -123,8 +122,8 @@ jobs:
           $exe=Get-Item dist/Rpi5FanControl-OneShot-ARM64-Setup.exe
           if ($exe.Length -gt 20000000) { throw 'Installer exceeds 20 MB' }
           Copy-Item stage/README.md,stage/INSTALL-FIRST.txt,stage/PROVENANCE.json dist/
-          Get-ChildItem dist -File | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
           @("Source: ${{ github.sha }}", "Setup bytes: $($exe.Length)", "Setup SHA256: $((Get-FileHash $exe.FullName -Algorithm SHA256).Hash)", "Compiler: $iscc", 'Original driver binaries were not rebuilt or re-signed.', 'Real-Pi installer testing is pending.') | Set-Content dist/BuildInfo.txt
+          Get-ChildItem dist -File | Where-Object Name -ne SHA256SUMS.txt | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
           Get-Content dist/BuildInfo.txt
       - uses: actions/upload-artifact@v4
         with:
@@ -157,13 +156,28 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & "$env:windir/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File stage/Install-OneShot.ps1 -Phase SelfTest -PackageRoot "$PWD/stage" -ResultFile "$PWD/dist/PolicyTests-ARM64.txt"
           if ($LASTEXITCODE -ne 0) { throw 'ARM64 policy/payload tests failed' }
+          $tokens=$null; $errors=$null
+          $ast=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'stage/Install-OneShot.ps1').Path,[ref]$tokens,[ref]$errors)
+          $f=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-BcdSigning'},$true)
+          Invoke-Expression $f.Extent.Text
+          $state=Get-BcdSigning
+          "Native ARM64 read-only BCD query passed: configured=$($state.Enabled)" | Add-Content dist/PolicyTests-ARM64.txt
           $bcdBefore=(& bcdedit.exe /enum '{current}' /v | Out-String)
           if ($LASTEXITCODE -ne 0) { throw 'Cannot record BCD baseline' }
           $app=Join-Path $env:ProgramFiles 'RPi5FanControl-OneShot'
           if (Test-Path $app) { throw 'Runner unexpectedly has the installation directory already' }
           $exe=(Resolve-Path dist/Rpi5FanControl-OneShot-ARM64-Setup.exe).Path
           $log=Join-Path $PWD 'dist/ARM64-Installer-Preflight.log'
-          $p=Start-Process -FilePath $exe -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/ACCEPTTESTSIGNING=1',('/LOG="'+$log+'"')) -PassThru -Wait
+          $p=Start-Process -FilePath $exe -ArgumentList @('/SP-','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/ACCEPTTESTSIGNING=1',('/LOG="'+$log+'"')) -PassThru
+          if (!$p.WaitForExit(120000)) {
+            Get-Process | Where-Object { $_.MainWindowTitle -or $_.ProcessName -match 'powershell|Setup|conhost' } | Format-List Id,ProcessName,MainWindowTitle | Out-File dist/ARM64-Timeout-Processes.txt
+            if (Test-Path $log) { Get-Content $log | Write-Host }
+            & taskkill.exe /PID $p.Id /T /F | Out-Host
+            throw 'Compiled installer did not finish read-only preflight within two minutes'
+          }
+          $p.Refresh()
+          Write-Host "Installer returned $($p.ExitCode)"
+          if (Test-Path $log) { Get-Content $log | Write-Host }
           if ($p.ExitCode -ne 7) { throw "Expected read-only prerequisite rejection (7), got $($p.ExitCode)" }
           if (Test-Path $app) { throw 'Installer wrote application files despite missing ACPI devices' }
           if ((& bcdedit.exe /enum '{current}' /v | Out-String) -ne $bcdBefore) { throw 'Preflight unexpectedly changed BCD' }
@@ -171,11 +185,13 @@ jobs:
           if (!(Select-String -Path $log -SimpleMatch 'Required present ACPI device not found' -Quiet)) { throw 'Setup failed for a different reason; inspect preflight log' }
           'PASS: compiled installer ran on Windows ARM64 and refused missing Pi ACPI devices before application/BCD/task changes. Physical Pi installation and reboot continuation are NOT tested by this check.' | Set-Content dist/ARM64-Installer-Tests.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Rpi5FanControl-OneShot-ARM64-tests
           path: |
             dist/PolicyTests-ARM64.txt
             dist/ARM64-Installer-Preflight.log
             dist/ARM64-Installer-Tests.txt
-          if-no-files-found: error
+            dist/ARM64-Timeout-Processes.txt
+          if-no-files-found: warn
           retention-days: 90
