@@ -125,7 +125,9 @@ function Get-BcdSigning {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read the current BCD entry.' }
     $id = [regex]::Match($text,'(?i)\{[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\}').Value
     if (!$id) { throw 'Cannot resolve the current boot-entry GUID.' }
-    $opened = ([wmiclass]'root\wmi:BcdStore').OpenStore('')
+    $class = [wmiclass]'root\wmi:BcdStore'
+    $class.psbase.Scope.Options.EnablePrivileges = $true
+    $opened = $class.OpenStore('')
     if (!$opened.ReturnValue) { throw 'Cannot open the system BCD store.' }
     $store = $opened.Store
     function Read-Boolean($Store,[string]$ObjectId,[int]$Depth) {
@@ -139,8 +141,8 @@ function Get-BcdSigning {
         $parents = @($elements.Elements | Where-Object { $_.Type -eq 0x14000006 })
         $found = @()
         foreach ($parent in $parents) {
-            foreach ($pid in $parent.Ids) {
-                $value = Read-Boolean $Store $pid ($Depth+1)
+            foreach ($parentId in $parent.Ids) {
+                $value = Read-Boolean $Store $parentId ($Depth+1)
                 if ($null -ne $value) { $found += $value }
             }
         }
@@ -177,7 +179,11 @@ function Get-Preflight {
     $secure = $false
     if (!($active -and $bcd.Enabled)) {
         try { $secure = [bool](Confirm-SecureBootUEFI -ErrorAction Stop) }
-        catch { throw 'Cannot determine Secure Boot state. Setup will not change boot policy when this check is unavailable.' }
+        catch {
+            $record = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' -Name UEFISecureBootEnabled -ErrorAction SilentlyContinue
+            if ($null -eq $record -or $record.UEFISecureBootEnabled -notin @(0,1)) { throw 'Cannot determine Secure Boot state. Setup will not change boot policy when both firmware and Windows state checks are unavailable.' }
+            $secure = [bool]$record.UEFISecureBootEnabled
+        }
     }
     $protection = 0
     if (!$bcd.Enabled) { $protection = Get-BitLockerProtection }
@@ -292,7 +298,7 @@ try {
         Remove-Resume
         $script:State.Attempts = [int]$script:State.Attempts + 1
         if ($script:State.Attempts -gt 2) { throw 'Automatic continuation limit reached. No reboot loop will be scheduled; review the installer log.' }
-    }
+    } else { $script:State.Attempts=0 }
     $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('O')
     $preflight=Get-Preflight
     if ($preflight.Action -in @('Restart','EnableRestart')) {
