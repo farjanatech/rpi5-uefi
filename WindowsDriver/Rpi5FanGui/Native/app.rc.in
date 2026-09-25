@@ -1,0 +1,27 @@
+#include <windows.h>
+101 ICON "@CMAKE_CURRENT_BINARY_DIR@/fan.ico"
+102 RCDATA "@CMAKE_CURRENT_SOURCE_DIR@/assets/fan-user.png"
+1 RT_MANIFEST "@CMAKE_CURRENT_SOURCE_DIR@/app.manifest"
+1 VERSIONINFO
+ FILEVERSION 0,2,0,0
+ PRODUCTVERSION 0,2,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904B0"
+  BEGIN
+   VALUE "FileDescription", "Raspberry Pi 5 Fan Control - Standalone\0"
+   VALUE "FileVersion", "0.2.0.0\0"
+   VALUE "ProductName", "RPi5 Fan Control\0"
+   VALUE "ProductVersion", "0.2.0\0"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x409, 1200
+ END
+END

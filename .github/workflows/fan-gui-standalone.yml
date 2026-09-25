@@ -1,0 +1,108 @@
+name: Fan GUI standalone
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, feat/fan-gui-standalone-image]
+    paths:
+      - 'WindowsDriver/Rpi5FanGui/Native/**'
+      - 'WindowsDriver/Rpi5Fan/Rpi5FanIoctl.h'
+      - '.github/workflows/fan-gui-standalone.yml'
+  pull_request:
+    paths:
+      - 'WindowsDriver/Rpi5FanGui/Native/**'
+      - 'WindowsDriver/Rpi5Fan/Rpi5FanIoctl.h'
+      - '.github/workflows/fan-gui-standalone.yml'
+permissions:
+  contents: read
+concurrency:
+  group: fan-gui-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ARM64, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure and compile native GUI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S WindowsDriver/Rpi5FanGui/Native -B out -G "Visual Studio 17 2022" -A ${{ matrix.arch }}
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
+          cmake --build out --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'C++ build failed' }
+      - name: Validate standalone binary and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-Item "out/Release/Rpi5FanControl-${{ matrix.arch }}.exe"
+          if ($exe.Length -gt 20000000) { throw 'Executable exceeds 20 MB' }
+          $bytes = [IO.File]::ReadAllBytes($exe.FullName)
+          $pe = [BitConverter]::ToInt32($bytes,0x3c)
+          $machine = [BitConverter]::ToUInt16($bytes,$pe+4)
+          $expected = if ('${{ matrix.arch }}' -eq 'ARM64') { 0xaa64 } else { 0x8664 }
+          if ($machine -ne $expected) { throw "Unexpected PE machine: $machine" }
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          $tools = Get-ChildItem "$vs/VC/Tools/MSVC" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $dumpbin = Join-Path $tools.FullName 'bin/Hostx64/x64/dumpbin.exe'
+          $dependencies = (& $dumpbin /dependents $exe.FullName | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency inspection failed' }
+          if ($dependencies -match '(?i)VCRUNTIME\d|MSVCP\d|hostfxr|hostpolicy|coreclr') { throw 'Unexpected non-system runtime dependency' }
+          New-Item dist -ItemType Directory -Force | Out-Null
+          Copy-Item $exe.FullName dist/
+          Copy-Item WindowsDriver/Rpi5FanGui/Native/README.md dist/
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          @("Commit: ${{ github.sha }}", "Architecture: ${{ matrix.arch }}", "Bytes: $($exe.Length)", "MB (decimal): $($exe.Length / 1000000)", "SHA256: $hash", '', $dependencies) | Set-Content dist/BuildInfo.txt
+          Get-Content dist/BuildInfo.txt
+          @("## Native fan GUI — ${{ matrix.arch }}", "Size: $($exe.Length) bytes", "SHA-256: $hash", 'No hardware fan test is performed by this build.') | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: x64 self-test and UI snapshot without a driver
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'dist/Rpi5FanControl-x64.exe').Path
+          $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Self-test failed: $($p.ExitCode)" }
+          $p = Start-Process -FilePath $exe -ArgumentList '--snapshot' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "UI snapshot failed: $($p.ExitCode)" }
+          if (!(Test-Path preview.png)) { throw 'UI snapshot was not created' }
+          Copy-Item preview.png dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rpi5FanControl-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+  smoke-arm64:
+    name: Native ARM64 smoke test (no Pi hardware)
+    needs: build
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Rpi5FanControl-ARM64
+          path: stage
+      - name: Run ARM64 self-test and preview
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'stage/Rpi5FanControl-ARM64.exe').Path
+          $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "ARM64 self-test failed: $($p.ExitCode)" }
+          $p = Start-Process -FilePath $exe -ArgumentList '--snapshot' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "ARM64 preview failed: $($p.ExitCode)" }
+          if (!(Test-Path preview.png)) { throw 'ARM64 preview image missing' }
+          'Native ARM64 self-test and preview passed. Physical fan/driver testing still required.' | Set-Content ARM64-SmokeTest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rpi5FanControl-ARM64-preview
+          path: |
+            preview.png
+            ARM64-SmokeTest.txt
+          if-no-files-found: error
+          retention-days: 30
