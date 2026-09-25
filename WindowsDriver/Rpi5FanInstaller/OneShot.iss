@@ -58,7 +58,7 @@ end;
 function ReadResult(const Path: String): String;
 var Text: AnsiString;
 begin
-  if LoadStringFromFile(Path, Text) then Result := UTF8ToString(Text)
+  if LoadStringFromFile(Path, Text) then Result := Utf8Decode(Text)
   else Result := 'No result was returned. Review the setup log; driver installation is not confirmed.';
 end;
 procedure InitializeWizard;
