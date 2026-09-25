@@ -59,6 +59,15 @@ jobs:
               value = gh('api', path, missing_ok=missing_ok)
               return None if value is None else json.loads(value)
 
+          def get_release():
+              # GET /releases/tags can return 404 while a new tag is still only
+              # attached to a draft. The authenticated collection includes drafts.
+              pages = json.loads(gh('api', f'repos/{REPO}/releases?per_page=100', '--paginate', '--slurp'))
+              matches = [r for page in pages for r in page if r['tag_name'] == TAG]
+              if len(matches) > 1:
+                  raise RuntimeError('Multiple releases use the tag; refusing to choose one')
+              return api(f"repos/{REPO}/releases/{matches[0]['id']}") if matches else None
+
           def digest(path):
               return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -133,7 +142,6 @@ jobs:
           The values below are explicitly simulated, not hardware measurements.
           ![Fan GUI preview](https://github.com/{REPO}/releases/download/{TAG}/Rpi5FanControl-preview.png)
           '''
-          # Remove Python indentation while preserving Markdown structure.
           lines = notes.splitlines()
           notes = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines).strip() + '\n'
           notes_path = root / 'release-notes.md'
@@ -164,7 +172,6 @@ jobs:
                   members['ARM64-SmokeTest.txt'] = (root / 'arm-preview' / 'ARM64-SmokeTest.txt').read_bytes()
               else:
                   members['preview.png'] = (folder / 'preview.png').read_bytes()
-              # Stable ZIP metadata makes safe retries reproducible.
               with zipfile.ZipFile(dist / f'Rpi5FanControl-Standalone-{arch}.zip', 'w', compression=zipfile.ZIP_DEFLATED) as z:
                   for filename, content in sorted(members.items()):
                       info = zipfile.ZipInfo(filename, date_time=(2026, 9, 25, 0, 0, 0))
@@ -176,15 +183,15 @@ jobs:
           sums = ''.join(f'{digest(p)}  {p.name}\n' for p in sorted(dist.iterdir()) if p.is_file() and p.name != 'SHA256SUMS.txt')
           (dist / 'SHA256SUMS.txt').write_text(sums, encoding='utf-8')
           assets = {p.name: p for p in dist.iterdir() if p.is_file()}
-          release = api(f'repos/{REPO}/releases/tags/{TAG}', missing_ok=True)
+          release = get_release()
           tag = api(f'repos/{REPO}/git/ref/tags/{TAG}', missing_ok=True)
           if tag and (tag['object']['type'] != 'commit' or tag['object']['sha'] != SHA):
               raise RuntimeError('Existing tag differs from the verified source; refusing to move it')
           if release is None:
               gh('release', 'create', TAG, '--repo', REPO, '--target', SHA, '--draft',
                  '--prerelease', '--latest=false', '--title', TITLE, '--notes-file', str(notes_path))
-              release = api(f'repos/{REPO}/releases/tags/{TAG}')
-          if release['target_commitish'] != SHA or not release['prerelease']:
+              release = get_release()
+          if release is None or release['target_commitish'] != SHA or not release['prerelease']:
               raise RuntimeError('Existing release has unexpected provenance or is not a prerelease')
           known = {a['name']: a for a in release['assets']}
           if set(known) - set(assets):
@@ -198,7 +205,6 @@ jobs:
               else:
                   raise RuntimeError(f'Published release is missing {name}; refusing to change it')
 
-          # Download the staged release assets and check every byte before publishing.
           verification = root / 'downloaded'
           gh('release', 'download', TAG, '--repo', REPO, '--dir', str(verification))
           for name, path in assets.items():
@@ -206,7 +212,7 @@ jobs:
                   raise RuntimeError(f'Release round-trip verification failed: {name}')
           if release['draft']:
               gh('release', 'edit', TAG, '--repo', REPO, '--draft=false', '--prerelease', '--latest=false')
-          published = api(f'repos/{REPO}/releases/tags/{TAG}')
+          published = api(f"repos/{REPO}/releases/{release['id']}")
           if published['draft'] or not published['prerelease'] or len(published['assets']) != len(assets):
               raise RuntimeError('Release publication was not confirmed')
           tag = api(f'repos/{REPO}/git/ref/tags/{TAG}')
