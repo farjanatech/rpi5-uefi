@@ -377,6 +377,7 @@ struct App {
     void DrawButton(const DRAWITEMSTRUCT& d) {
         Graphics g(d.hDC); g.SetSmoothingMode(SmoothingModeAntiAlias);
         float w=static_cast<float>(d.rcItem.right-d.rcItem.left), h=static_cast<float>(d.rcItem.bottom-d.rcItem.top);
+        SolidBrush backdrop(Card); g.FillRectangle(&backdrop,RectF(0,0,w,h));
         bool disabled=(d.itemState&ODS_DISABLED)!=0;
         bool selected=sample.connected && ((d.CtlID==AUTO && !sample.status.ControlMode) || (d.CtlID==MANUAL && sample.status.ControlMode));
         Color fill=selected ? Color(255,31,75,71) : Card;
@@ -387,10 +388,25 @@ struct App {
         if (d.itemState&ODS_FOCUS) { RECT r=d.rcItem; InflateRect(&r,-4,-4); DrawFocusRect(d.hDC,&r); }
     }
     bool SaveSnapshot() {
-        RECT r{}; GetClientRect(window,&r); Bitmap b(r.right,r.bottom,PixelFormat32bppARGB);
-        { Graphics g(&b); HDC dc=g.GetHDC();
-          SendMessageW(window,WM_PRINT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT|PRF_CHILDREN|PRF_ERASEBKGND);
-          g.ReleaseHDC(dc); }
+        RECT r{}; GetClientRect(window,&r);
+        // Render in client coordinates. Default WM_PRINT on a top-level window
+        // can offset child controls by the non-client title bar and borders.
+        Bitmap b(r.right,r.bottom,PixelFormat24bppRGB);
+        { Graphics g(&b); Draw(g); }
+        {
+            Graphics g(&b); HDC dc=g.GetHDC();
+            for (HWND child=GetWindow(window,GW_CHILD); child; child=GetWindow(child,GW_HWNDNEXT)) {
+                if (!IsWindowVisible(child)) continue;
+                RECT cr{}; GetWindowRect(child,&cr);
+                MapWindowPoints(HWND_DESKTOP,window,reinterpret_cast<POINT*>(&cr),2);
+                int saved=SaveDC(dc);
+                SetViewportOrgEx(dc,cr.left,cr.top,nullptr);
+                IntersectClipRect(dc,0,0,cr.right-cr.left,cr.bottom-cr.top);
+                SendMessageW(child,WM_PRINT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT|PRF_NONCLIENT|PRF_ERASEBKGND);
+                RestoreDC(dc,saved);
+            }
+            g.ReleaseHDC(dc);
+        }
         UINT count=0,bytes=0; GetImageEncodersSize(&count,&bytes); std::vector<BYTE> buffer(bytes);
         if (!bytes) return false;
         auto enc=reinterpret_cast<ImageCodecInfo*>(buffer.data()); GetImageEncoders(count,bytes,enc);
