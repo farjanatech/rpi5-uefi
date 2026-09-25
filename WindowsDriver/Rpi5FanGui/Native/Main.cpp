@@ -220,7 +220,7 @@ struct App {
     std::wstring lastError;
     Sample sample;
     Rotor rotor;
-    Clock::time_point lastFrame = Clock::now();
+    Clock::time_point lastFrame = Clock::now(), lastSample = Clock::now();
     std::unique_ptr<Worker> worker;
     IStream* imageStream = nullptr;
     std::unique_ptr<Bitmap> fan;
@@ -273,7 +273,7 @@ struct App {
         SetWindowTextW(log,all.c_str()); SendMessageW(log,EM_SETSEL,all.size(),all.size()); SendMessageW(log,EM_SCROLLCARET,0,0);
     }
     void AcceptSample() {
-        sample = worker->Latest(); pending = false;
+        sample = worker->Latest(); pending = false; lastSample = Clock::now();
         if (sample.connected) {
             if (firstSample && sample.status.RequestedPercent >= 30 && sample.status.RequestedPercent <= 100) {
                 manual = sample.status.RequestedPercent; SendMessageW(slider,TBM_SETPOS,TRUE,manual);
@@ -311,17 +311,17 @@ struct App {
         Color state = sample.connected && sample.status.HardwareReady ? Accent : Warning;
         if (preview) state = Warning;
         Rounded(g,RectF(width-229,32,201,36),18,Card,Edge);
-        SolidBrush dot(state); g.FillEllipse(&dot,width-213,46,8,8);
+        SolidBrush dot(state); g.FillEllipse(&dot,RectF(width-213,46,8,8));
         Label(g,preview ? L"PREVIEW" : sample.connected && sample.status.HardwareReady ? L"DRIVER READY" : L"NOT CONNECTED",
               RectF(width-196,40,161,25),12,state,true);
         Rounded(g,RectF(28,116,leftWidth,330),18,Card,Edge);
         Label(g,L"ACTIVE COOLER",RectF(48,138,leftWidth-144,25),12,Muted,true);
         float cx=28+leftWidth/2, cy=274;
-        SolidBrush disc(Color(255,18,29,44)); g.FillEllipse(&disc,cx-106,cy-106,212,212);
-        Pen ring(Edge,2); g.DrawEllipse(&ring,cx-108,cy-108,216,216);
+        SolidBrush disc(Color(255,18,29,44)); g.FillEllipse(&disc,RectF(cx-106,cy-106,212,212));
+        Pen ring(Edge,2); g.DrawEllipse(&ring,RectF(cx-108,cy-108,216,216));
         if (sample.connected && sample.status.HardwareReady) {
             Pen arc(Accent,3); arc.SetStartCap(LineCapRound); arc.SetEndCap(LineCapRound);
-            g.DrawArc(&arc,cx-108,cy-108,216,216,-90,static_cast<float>(sample.status.CurrentPercent)*3.6f);
+            g.DrawArc(&arc,RectF(cx-108,cy-108,216,216),-90.0f,static_cast<float>(sample.status.CurrentPercent)*3.6f);
         }
         GraphicsState saved=g.Save(); g.TranslateTransform(cx,cy); g.RotateTransform(static_cast<float>(rotor.angle));
         ColorMatrix matrix{}; matrix.m[3][3] = sample.connected ? 1.0f : 0.3f;
@@ -440,6 +440,12 @@ LRESULT CALLBACK WindowProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
     case WM_TIMER: {
         if (wp==2) { KillTimer(h,2); a->exitCode=a->SaveSnapshot() ? 0 : 12; PostMessageW(h,WM_CLOSE,0,0); return 0; }
         auto now=Clock::now(); double dt=std::chrono::duration<double>(now-a->lastFrame).count(); a->lastFrame=now;
+        if (!a->preview && a->sample.connected && now-a->lastSample > std::chrono::seconds(6)) {
+            a->sample.connected=false;
+            a->sample.error=L"No fresh driver status for over 6 seconds. Cooling state is unknown; check the physical fan.";
+            a->rotor.Stop(); a->EnableControls(); a->AddRecent(a->sample.error);
+            InvalidateRect(h,nullptr,FALSE);
+        }
         if (IsIconic(h)||a->paused||!a->motionAllowed) return 0;
         const auto& s=a->sample.status;
         double target=VisualSpeed(a->sample.connected && s.HardwareReady,s.CurrentPercent,s.FanRpmValid!=0,s.FanRpm);
