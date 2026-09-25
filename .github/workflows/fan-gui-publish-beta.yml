@@ -1,0 +1,220 @@
+name: Publish standalone Fan GUI beta
+
+# Promote only the already-tested, checksum-pinned GUI build. This workflow
+# never builds or publishes firmware/drivers, merges a PR, or overwrites assets.
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/fan-gui-standalone-image]
+    paths: ['.github/workflows/fan-gui-publish-beta.yml']
+permissions: {}
+concurrency:
+  group: publish-rpi5-fan-gui-v0.2.0-beta.1
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'farjanatech/rpi5-uefi' && github.ref == 'refs/heads/feat/fan-gui-standalone-image'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: farjanatech/rpi5-uefi
+    steps:
+      - name: Verify original artifacts, package, and publish prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          import struct
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          REPO = os.environ['GH_REPO']
+          RUN = 36120135750
+          SHA = '5db165e2fb5ca40ace07fa105918a287a17a9e84'
+          TAG = 'rpi5-fan-gui-v0.2.0-beta.1'
+          TITLE = 'Raspberry Pi 5 Fan Control GUI v0.2.0-beta.1 - Standalone ARM64'
+          EXPECTED = {
+              'ARM64': (375296, 'd4c037dfd4530923ef75ecd730d37c837793080cd53bc3e1e2d6cc9377eff8d5', 0xaa64),
+              'x64': (390144, '3e5c1799a89668016d8439e584e51c49b01f651ed88e29f1752036c2e3d4465e', 0x8664),
+          }
+
+          def gh(*args, missing_ok=False):
+              p = subprocess.run(['gh', *args], text=True, capture_output=True)
+              if p.returncode:
+                  if missing_ok and 'HTTP 404' in p.stderr:
+                      return None
+                  raise RuntimeError(p.stderr or p.stdout or 'GitHub CLI failed')
+              return p.stdout
+
+          def api(path, missing_ok=False):
+              value = gh('api', path, missing_ok=missing_ok)
+              return None if value is None else json.loads(value)
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          run = api(f'repos/{REPO}/actions/runs/{RUN}')
+          if (run['head_sha'] != SHA or run['event'] != 'push'
+                  or run['status'] != 'completed' or run['conclusion'] != 'success'
+                  or run['path'] != '.github/workflows/fan-gui-standalone.yml'):
+              raise RuntimeError('The pinned source build is not the expected successful build')
+          jobs = api(f'repos/{REPO}/actions/runs/{RUN}/jobs?per_page=100')['jobs']
+          required = {'Build ARM64', 'Build x64', 'Native ARM64 smoke test (no Pi hardware)'}
+          if not required.issubset({j['name'] for j in jobs if j['conclusion'] == 'success'}):
+              raise RuntimeError('Required build/smoke-test jobs did not all pass')
+
+          root = Path('release-work')
+          root.mkdir(exist_ok=True)
+          dist = root / 'dist'
+          dist.mkdir(exist_ok=True)
+          for arch in EXPECTED:
+              gh('run', 'download', str(RUN), '--repo', REPO,
+                 '--name', f'Rpi5FanControl-{arch}', '--dir', str(root / arch))
+          gh('run', 'download', str(RUN), '--repo', REPO,
+             '--name', 'Rpi5FanControl-ARM64-preview', '--dir', str(root / 'arm-preview'))
+          preview = root / 'arm-preview' / 'preview.png'
+          if not preview.read_bytes().startswith(b'\x89PNG\r\n\x1a\n'):
+              raise RuntimeError('Native ARM64 preview PNG is missing or invalid')
+          shutil.copyfile(preview, dist / 'Rpi5FanControl-preview.png')
+
+          notes = f'''## Standalone Fan Control GUI - public test release
+
+          Download **Rpi5FanControl-ARM64.exe** for a Raspberry Pi 5 running Windows 11 ARM64.
+          The EXE is **375,296 bytes (0.375 MB)**, smaller than the requested 10-20 MB budget.
+          It is the application itself, not an installer or download launcher.
+
+          ### Updated icon and animation
+          Uses the supplied fan image, with a mint tint for contrast and embedded Windows icon sizes.
+          Rotation changes speed smoothly without restarting its angle. The animation is illustrative;
+          it does not prove the physical fan is spinning. Valid measured RPM is shown separately.
+          Pause visual only pauses the on-screen animation, not the physical fan.
+
+          ### Run
+          1. Keep the existing exp.6 / API v2 fan driver and temperature-provider driver installed.
+          2. Close the old GUI, then double-click Rpi5FanControl-ARM64.exe and approve administrator access.
+          3. Select Automatic, Apply manual (30-100%), or Force 100% as needed.
+
+          No separate .NET, Python, WebView2, Visual C++ Redistributable, or external image files are required.
+          Closing the GUI leaves the driver's current mode active. Select Automatic before closing
+          when temperature-managed cooling is desired.
+
+          ### Release assets
+          - **Rpi5FanControl-ARM64.exe**: the native executable for the Pi.
+          - **Rpi5FanControl-Standalone-ARM64.zip**: the same EXE plus instructions, build information,
+            checksum, native ARM64 smoke-test record, and a preview screenshot.
+          - **Rpi5FanControl-x64.exe** and its ZIP: optional desktop development/preview edition.
+            Use --preview on a normal x64 Windows PC; it displays simulated readings without driver access.
+          - **SHA256SUMS.txt**: checksums for the downloadable assets.
+
+          ### Verification and limits
+          Source commit: `{SHA}`.
+          [Successful build, self-tests, and native Windows ARM64 preview test](https://github.com/{REPO}/actions/runs/{RUN}).
+          Binaries are promoted unchanged from that run; their sizes, SHA-256 values and PE architectures
+          are verified again before publication. The ZIP files are release packages of those same binaries.
+
+          ARM64 EXE SHA-256: `{EXPECTED['ARM64'][1]}`.
+          x64 EXE SHA-256: `{EXPECTED['x64'][1]}`.
+
+          **Unsigned experimental GUI-only prerelease. Physical fan control on a Raspberry Pi has not
+          been tested for this GUI build. Existing drivers are still required.** No firmware, kernel
+          driver, or driver installer is included or changed by this release. It does not replace the
+          repository's firmware releases. [Pull request #7](https://github.com/{REPO}/pull/7) remains unmerged.
+
+          ### Native ARM64 preview
+          The values below are explicitly simulated, not hardware measurements.
+          ![Fan GUI preview](https://github.com/{REPO}/releases/download/{TAG}/Rpi5FanControl-preview.png)
+          '''
+          # Remove Python indentation while preserving Markdown structure.
+          lines = notes.splitlines()
+          notes = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines).strip() + '\n'
+          notes_path = root / 'release-notes.md'
+          notes_path.write_text(notes, encoding='utf-8')
+
+          for arch, (size, expected_hash, machine) in EXPECTED.items():
+              folder = root / arch
+              name = f'Rpi5FanControl-{arch}.exe'
+              exe = folder / name
+              data = exe.read_bytes()
+              if len(data) != size or digest(exe) != expected_hash or len(data) > 20000000:
+                  raise RuntimeError(f'{arch}: binary size/hash does not match the tested build')
+              pe = struct.unpack_from('<I', data, 0x3c)[0]
+              if data[:2] != b'MZ' or data[pe:pe+4] != b'PE\0\0' or struct.unpack_from('<H', data, pe+4)[0] != machine:
+                  raise RuntimeError(f'{arch}: invalid PE architecture')
+              if SHA not in (folder / 'BuildInfo.txt').read_text(encoding='utf-8-sig'):
+                  raise RuntimeError(f'{arch}: build provenance does not match the pinned commit')
+              shutil.copyfile(exe, dist / name)
+              members = {
+                  name: data,
+                  'README.md': (folder / 'README.md').read_bytes(),
+                  'BuildInfo.txt': (folder / 'BuildInfo.txt').read_bytes(),
+                  'RELEASE-NOTES.md': notes.encode('utf-8'),
+                  'SHA256SUMS.txt': f'{expected_hash}  {name}\n'.encode(),
+              }
+              if arch == 'ARM64':
+                  members['preview.png'] = preview.read_bytes()
+                  members['ARM64-SmokeTest.txt'] = (root / 'arm-preview' / 'ARM64-SmokeTest.txt').read_bytes()
+              else:
+                  members['preview.png'] = (folder / 'preview.png').read_bytes()
+              # Stable ZIP metadata makes safe retries reproducible.
+              with zipfile.ZipFile(dist / f'Rpi5FanControl-Standalone-{arch}.zip', 'w', compression=zipfile.ZIP_DEFLATED) as z:
+                  for filename, content in sorted(members.items()):
+                      info = zipfile.ZipInfo(filename, date_time=(2026, 9, 25, 0, 0, 0))
+                      info.compress_type = zipfile.ZIP_DEFLATED
+                      info.external_attr = 0o100644 << 16
+                      z.writestr(info, content)
+              print(f'Verified {name}: {size} bytes, SHA256 {expected_hash}', flush=True)
+
+          sums = ''.join(f'{digest(p)}  {p.name}\n' for p in sorted(dist.iterdir()) if p.is_file() and p.name != 'SHA256SUMS.txt')
+          (dist / 'SHA256SUMS.txt').write_text(sums, encoding='utf-8')
+          assets = {p.name: p for p in dist.iterdir() if p.is_file()}
+          release = api(f'repos/{REPO}/releases/tags/{TAG}', missing_ok=True)
+          tag = api(f'repos/{REPO}/git/ref/tags/{TAG}', missing_ok=True)
+          if tag and (tag['object']['type'] != 'commit' or tag['object']['sha'] != SHA):
+              raise RuntimeError('Existing tag differs from the verified source; refusing to move it')
+          if release is None:
+              gh('release', 'create', TAG, '--repo', REPO, '--target', SHA, '--draft',
+                 '--prerelease', '--latest=false', '--title', TITLE, '--notes-file', str(notes_path))
+              release = api(f'repos/{REPO}/releases/tags/{TAG}')
+          if release['target_commitish'] != SHA or not release['prerelease']:
+              raise RuntimeError('Existing release has unexpected provenance or is not a prerelease')
+          known = {a['name']: a for a in release['assets']}
+          if set(known) - set(assets):
+              raise RuntimeError('Existing release has unexpected assets; refusing to overwrite')
+          for name, path in sorted(assets.items()):
+              if name in known:
+                  if known[name]['size'] != path.stat().st_size or known[name].get('digest') != 'sha256:' + digest(path):
+                      raise RuntimeError(f'Existing release asset differs: {name}; refusing to overwrite')
+              elif release['draft']:
+                  gh('release', 'upload', TAG, str(path), '--repo', REPO)
+              else:
+                  raise RuntimeError(f'Published release is missing {name}; refusing to change it')
+
+          # Download the staged release assets and check every byte before publishing.
+          verification = root / 'downloaded'
+          gh('release', 'download', TAG, '--repo', REPO, '--dir', str(verification))
+          for name, path in assets.items():
+              if digest(verification / name) != digest(path):
+                  raise RuntimeError(f'Release round-trip verification failed: {name}')
+          if release['draft']:
+              gh('release', 'edit', TAG, '--repo', REPO, '--draft=false', '--prerelease', '--latest=false')
+          published = api(f'repos/{REPO}/releases/tags/{TAG}')
+          if published['draft'] or not published['prerelease'] or len(published['assets']) != len(assets):
+              raise RuntimeError('Release publication was not confirmed')
+          tag = api(f'repos/{REPO}/git/ref/tags/{TAG}')
+          if tag['object']['type'] != 'commit' or tag['object']['sha'] != SHA:
+              raise RuntimeError('Published tag does not point to the tested source commit')
+          print(published['html_url'], flush=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(f"## Published standalone Fan GUI beta\n\n{published['html_url']}\n\n")
+              summary.write('All assets were downloaded back and SHA-256 verified before publication.\n\n')
+              summary.write('ARM64 EXE: 375,296 bytes. Existing drivers required. Physical Pi hardware testing still pending.\n')
+          PY
