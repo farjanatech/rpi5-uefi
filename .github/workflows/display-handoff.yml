@@ -1,4 +1,5 @@
 name: Build Pi5 display timing handoff candidate
+# exp0.7 validates only the new volatile timing/EDID handoff over exp0.6.
 
 on:
   push:
