@@ -34,7 +34,7 @@ def main() -> None:
         ns.reverse)
     replace_one(mbox,
         "#define RPI_MBOX_GET_FB_GPIOVIRTBUF                           0x00040010\n",
-        "#define RPI_MBOX_GET_FB_GPIOVIRTBUF                           0x00040010\n#define RPI_MBOX_GET_DISPLAY_TIMING                           0x00040017\n",
+        "#define RPI_MBOX_GET_FB_GPIOVIRTBUF                           0x00040010\n#define RPI_MBOX_GET_FB_DISPLAY_ID                            0x00040016\n#define RPI_MBOX_GET_DISPLAY_TIMING                           0x00040017\n",
         ns.reverse)
 
     proto = r / "Platform/RaspberryPi/Include/Protocol/RpiFirmware.h"
@@ -73,6 +73,13 @@ typedef struct {
     api = """\
 typedef
 EFI_STATUS
+(EFIAPI *GET_FB_DISPLAY_ID) (
+  IN  UINT32  DisplayIndex,
+  OUT UINT32  *DisplayId
+  );
+
+typedef
+EFI_STATUS
 (EFIAPI *GET_DISPLAY_TIMING) (
   IN  UINT32                       DisplayNumber,
   OUT RASPBERRY_PI_DISPLAY_TIMING  *Timing
@@ -91,12 +98,19 @@ EFI_STATUS
         api + "typedef struct {\n  SET_POWER_STATE", ns.reverse)
     replace_one(proto,
         "  GET_TEMPERATURE        GetTemperature;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
-        "  GET_TEMPERATURE        GetTemperature;\n  GET_DISPLAY_TIMING     GetDisplayTiming;\n  GET_EDID_BLOCK_DISPLAY GetEdidBlockDisplay;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
+        "  GET_TEMPERATURE        GetTemperature;\n  GET_FB_DISPLAY_ID      GetFbDisplayId;\n  GET_DISPLAY_TIMING     GetDisplayTiming;\n  GET_EDID_BLOCK_DISPLAY GetEdidBlockDisplay;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
         ns.reverse)
 
     fw = r / "Platform/RaspberryPi/Drivers/RpiFirmwareDxe/RpiFirmwareDxe.c"
     structs = """\
 #pragma pack(push, 1)
+typedef struct {
+  RPI_FW_BUFFER_HEAD  BufferHead;
+  RPI_FW_TAG_HEAD     TagHead;
+  UINT32              TagBody;
+  UINT32              EndTag;
+} RPI_FW_GET_FB_DISPLAY_ID_CMD;
+
 typedef struct {
   RPI_FW_BUFFER_HEAD            BufferHead;
   RPI_FW_TAG_HEAD               TagHead;
@@ -127,6 +141,46 @@ typedef struct {
 STATIC
 EFI_STATUS
 EFIAPI
+RpiFirmwareGetFbDisplayId (
+  IN  UINT32  DisplayIndex,
+  OUT UINT32  *DisplayId
+  )
+{
+  RPI_FW_GET_FB_DISPLAY_ID_CMD *Cmd;
+  EFI_STATUS                   Status;
+  UINT32                       Result;
+
+  if (DisplayId == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+  if (!AcquireSpinLockOrFail (&mMailboxLock)) {
+    return EFI_DEVICE_ERROR;
+  }
+
+  Cmd = mDmaBuffer;
+  ZeroMem (Cmd, sizeof (*Cmd));
+  Cmd->BufferHead.BufferSize = sizeof (*Cmd);
+  Cmd->TagHead.TagId = RPI_MBOX_GET_FB_DISPLAY_ID;
+  Cmd->TagHead.TagSize = sizeof (Cmd->TagBody);
+  Cmd->TagBody = DisplayIndex;
+  Cmd->EndTag = 0;
+
+  Status = MailboxTransaction (Cmd->BufferHead.BufferSize, RPI_MBOX_VC_CHANNEL, &Result);
+  if (EFI_ERROR (Status) ||
+      Cmd->BufferHead.Response != RPI_MBOX_RESP_SUCCESS ||
+      (Cmd->TagHead.TagValueSize & RPI_MBOX_VALUE_SIZE_RESPONSE_MASK) == 0 ||
+      (Cmd->TagHead.TagValueSize & ~RPI_MBOX_VALUE_SIZE_RESPONSE_MASK) < sizeof (Cmd->TagBody)) {
+    Status = EFI_NOT_FOUND;
+  } else {
+    *DisplayId = Cmd->TagBody;
+  }
+  ReleaseSpinLock (&mMailboxLock);
+  return Status;
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
 RpiFirmwareGetDisplayTiming (
   IN  UINT32                       DisplayNumber,
   OUT RASPBERRY_PI_DISPLAY_TIMING  *Timing
@@ -136,7 +190,7 @@ RpiFirmwareGetDisplayTiming (
   EFI_STATUS                    Status;
   UINT32                        Result;
 
-  if (Timing == NULL || DisplayNumber > 1) {
+  if (Timing == NULL || DisplayNumber > 0xFFU) {
     return EFI_INVALID_PARAMETER;
   }
   if (!AcquireSpinLockOrFail (&mMailboxLock)) {
@@ -178,7 +232,7 @@ RpiFirmwareGetEdidBlockDisplay (
   EFI_STATUS                        Status;
   UINT32                            Result;
 
-  if (Edid == NULL || DisplayNumber > 1 || BlockNumber > 255) {
+  if (Edid == NULL || DisplayNumber > 0xFFU || BlockNumber > 255) {
     return EFI_INVALID_PARAMETER;
   }
   if (!AcquireSpinLockOrFail (&mMailboxLock)) {
@@ -214,11 +268,11 @@ RpiFirmwareGetEdidBlockDisplay (
         ns.reverse)
     replace_one(fw,
         "  RpiFirmwareGetTemperature,\n};",
-        "  RpiFirmwareGetTemperature,\n  RpiFirmwareGetDisplayTiming,\n  RpiFirmwareGetEdidBlockDisplay,\n};",
+        "  RpiFirmwareGetTemperature,\n  RpiFirmwareGetFbDisplayId,\n  RpiFirmwareGetDisplayTiming,\n  RpiFirmwareGetEdidBlockDisplay,\n};",
         ns.reverse)
     replace_one(fw,
         "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n",
-        "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetDisplayTiming);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetEdidBlockDisplay);\n",
+        "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetFbDisplayId);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetDisplayTiming);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetEdidBlockDisplay);\n",
         ns.reverse)
 
     disp = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c"
@@ -228,6 +282,7 @@ RpiFirmwareGetEdidBlockDisplay (
 #define RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS  4
 #define RPI5_DISPLAY_HANDOFF_TIMING_VALID  BIT0
 #define RPI5_DISPLAY_HANDOFF_EDID_VALID    BIT1
+#define RPI5_DISPLAY_TIMING_FLAG_INTERLACE  BIT2
 
 STATIC EFI_GUID mRpi5DisplayHandoffGuid =
   { 0x941ce3d8, 0x8c4f, 0x4b9e, { 0xa5, 0x77, 0x1c, 0xc9, 0x82, 0x74, 0x55, 0x31 } };
@@ -285,49 +340,78 @@ PublishDisplayHandoff (
   UINT32 Block;
   UINT32 WantedBlocks;
 
+  /*
+   * This is a volatile per-boot contract.  Delete the previous value first so
+   * a failed query or SetVariable can never leave same-resolution stale timing
+   * behind for Windows to consume later in the boot.
+   */
+  (VOID)gRT->SetVariable (L"Rpi5DisplayHandoff", &mRpi5DisplayHandoffGuid, 0, 0, NULL);
+
   ZeroMem (&Handoff, sizeof (Handoff));
   Handoff.Signature = RPI5_DISPLAY_HANDOFF_SIGNATURE;
   Handoff.Version = RPI5_DISPLAY_HANDOFF_VERSION;
   Handoff.Size = sizeof (Handoff);
 
-  for (Display = 0; Display < 2; Display++) {
+  /*
+   * Legacy framebuffer calls operate on logical framebuffer display index 0.
+   * Translate that index to the firmware/DispmanX display ID first.  Do not
+   * guess 0/1 from geometry: current firmware IDs include HDMI0=2 and HDMI1=7.
+   */
+  Display = 0;
+  Status = mFwProtocol->GetFbDisplayId (0, &Display);
+  if (!EFI_ERROR (Status) && Display <= 0xFFU) {
     ZeroMem (&Timing, sizeof (Timing));
     Status = mFwProtocol->GetDisplayTiming (Display, &Timing);
-    if (!EFI_ERROR (Status) && Timing.Clock != 0 &&
+    if (!EFI_ERROR (Status) && Timing.Clock != 0 && Timing.Clock <= 4000000U &&
         Timing.HDisplay == Width && Timing.VDisplay == Height &&
-        Timing.HTotal >= Timing.HDisplay && Timing.VTotal >= Timing.VDisplay) {
+        Timing.HTotal >= Timing.HDisplay && Timing.VTotal >= Timing.VDisplay &&
+        Timing.HSyncStart >= Timing.HDisplay &&
+        Timing.HSyncEnd >= Timing.HSyncStart && Timing.HSyncEnd <= Timing.HTotal &&
+        Timing.VSyncStart >= Timing.VDisplay &&
+        Timing.VSyncEnd >= Timing.VSyncStart && Timing.VSyncEnd <= Timing.VTotal &&
+        (Timing.Flags & RPI5_DISPLAY_TIMING_FLAG_INTERLACE) == 0) {
       Handoff.DisplayNumber = Display;
       CopyMem (&Handoff.Timing, &Timing, sizeof (Timing));
       Handoff.Flags |= RPI5_DISPLAY_HANDOFF_TIMING_VALID;
-      break;
     }
   }
 
   if ((Handoff.Flags & RPI5_DISPLAY_HANDOFF_TIMING_VALID) != 0) {
     Status = mFwProtocol->GetEdidBlockDisplay (Handoff.DisplayNumber, 0, &Handoff.Edid[0]);
     if (!EFI_ERROR (Status) && ValidateEdidBlock (&Handoff.Edid[0], TRUE)) {
-      Handoff.EdidBlockCount = 1;
-      WantedBlocks = 1 + Handoff.Edid[126];
-      if (WantedBlocks > RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) {
-        WantedBlocks = RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS;
-      }
-      for (Block = 1; Block < WantedBlocks; Block++) {
-        Status = mFwProtocol->GetEdidBlockDisplay (
-                                Handoff.DisplayNumber,
-                                Block,
-                                &Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE]);
-        if (EFI_ERROR (Status) ||
-            !ValidateEdidBlock (&Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE], FALSE)) {
-          break;
+      WantedBlocks = 1U + Handoff.Edid[126];
+
+      /*
+       * Publish EDID only if the complete monitor-declared block chain fits the
+       * version-1 contract and every block was read with a valid checksum.
+       * Timing remains usable on its own if a large/corrupt EDID is rejected.
+       */
+      if (WantedBlocks <= RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) {
+        Handoff.EdidBlockCount = 1;
+        for (Block = 1; Block < WantedBlocks; Block++) {
+          Status = mFwProtocol->GetEdidBlockDisplay (
+                                  Handoff.DisplayNumber,
+                                  Block,
+                                  &Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE]);
+          if (EFI_ERROR (Status) ||
+              !ValidateEdidBlock (&Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE], FALSE)) {
+            break;
+          }
+          Handoff.EdidBlockCount++;
         }
-        Handoff.EdidBlockCount++;
+        if (Handoff.EdidBlockCount == WantedBlocks) {
+          Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
+        }
       }
-      Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
+    }
+
+    if ((Handoff.Flags & RPI5_DISPLAY_HANDOFF_EDID_VALID) == 0) {
+      Handoff.EdidBlockCount = 0;
+      ZeroMem (Handoff.Edid, sizeof (Handoff.Edid));
     }
   }
 
   if (Handoff.Flags == 0) {
-    (VOID)gRT->SetVariable (L"Rpi5DisplayHandoff", &mRpi5DisplayHandoffGuid, 0, 0, NULL);
     return;
   }
 
@@ -338,7 +422,7 @@ PublishDisplayHandoff (
                   sizeof (Handoff),
                   &Handoff);
   DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
-    "Rpi5Display handoff: display=%u flags=0x%x %ux%u clock=%uKHz edidBlocks=%u status=%r\n",
+    "Rpi5Display handoff: display=%u flags=0x%x %ux%u clock=%uKHz edidBlocks=%u status=%r\\n",
     Handoff.DisplayNumber, Handoff.Flags, Width, Height, Handoff.Timing.Clock,
     Handoff.EdidBlockCount, Status));
 }
