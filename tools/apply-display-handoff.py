@@ -345,7 +345,7 @@ PublishDisplayHandoff (
    * a failed query or SetVariable can never leave same-resolution stale timing
    * behind for Windows to consume later in the boot.
    */
-  (VOID)gRT->SetVariable (L"Rpi5DisplayHandoff", &mRpi5DisplayHandoffGuid, 0, 0, NULL);
+  (VOID)gST->RuntimeServices->SetVariable (L"Rpi5DisplayHandoff", &mRpi5DisplayHandoffGuid, 0, 0, NULL);
 
   ZeroMem (&Handoff, sizeof (Handoff));
   Handoff.Signature = RPI5_DISPLAY_HANDOFF_SIGNATURE;
@@ -415,7 +415,7 @@ PublishDisplayHandoff (
     return;
   }
 
-  Status = gRT->SetVariable (
+  Status = gST->RuntimeServices->SetVariable (
                   L"Rpi5DisplayHandoff",
                   &mRpi5DisplayHandoffGuid,
                   EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
