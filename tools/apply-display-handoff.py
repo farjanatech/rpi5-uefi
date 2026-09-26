@@ -335,9 +335,19 @@ PublishDisplayHandoff (
 }
 
 """
+    display_set_mode_impl = """\
+STATIC
+EFI_STATUS
+EFIAPI
+DisplaySetMode (
+  IN  EFI_GRAPHICS_OUTPUT_PROTOCOL *This,
+  IN  UINT32                       ModeNumber
+  )
+{
+"""
     replace_one(disp,
-        "STATIC\nEFI_STATUS\nEFIAPI\nDisplaySetMode (",
-        handoff + "STATIC\nEFI_STATUS\nEFIAPI\nDisplaySetMode (",
+        display_set_mode_impl,
+        handoff + display_set_mode_impl,
         ns.reverse)
     replace_one(disp,
         "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  ClearScreen (This);",
