@@ -1,0 +1,213 @@
+name: Build Pi5 display timing handoff candidate
+# exp0.7 validates only the new volatile timing/EDID handoff over exp0.6.
+
+on:
+  push:
+    branches:
+      - display/edid-timing-handoff
+    paths:
+      - 'build.sh'
+      - 'tools/apply-display-handoff.py'
+      - '.github/workflows/display-handoff.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: display-handoff-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  EXP06_BASELINE: 1446e7defcc6557374273e4721c5036f8075805b
+  BASELINE_EDK2_PLATFORMS: c4b5d05de1f2ef633bdb4c175b5c118fcb2666ed
+  RPI_FIRMWARE_URL: https://github.com/raspberrypi/firmware
+  DTB_VERSION: 1e403e23baab5673f0494a200f57cd01287d5b1a
+  D0_OVERLAY_VERSION: bead686816848038563a542dc854346ab13253a2
+
+jobs:
+  candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: RELEASE
+            debug: '0'
+          - name: DEBUG
+            debug: '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Protect exp0.6 hardware-validated baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$EXP06_BASELINE" HEAD
+          git diff --exit-code "$EXP06_BASELINE"..HEAD -- \
+            .gitmodules config.txt build-display-resource-fix.sh \
+            arm-trusted-firmware edk2 edk2-platforms edk2-non-osi \
+            temporary-patches/edk2-platforms/0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch \
+            temporary-patches/edk2-platforms/0002-RPi5-keep-microSD-powered-during-UEFI.patch \
+            temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch \
+            temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch \
+            temporary-patches/edk2-platforms/0005-RPi5-RTC-and-settings-persistence.patch \
+            temporary-patches/edk2-platforms/0006-RPi5-narrow-SOCB-resource-window-for-GPU.patch \
+            tests/display_resource_test.py tests/wifi_pinctrl_test.py tests/rtc_settings_test.py
+          changed="$(git diff --name-only "$EXP06_BASELINE"..HEAD)"
+          while IFS= read -r path; do
+            [[ -z "$path" ]] && continue
+            case "$path" in
+              build.sh|tools/apply-display-handoff.py|.github/workflows/display-handoff.yml)
+                ;;
+              *) echo "Unexpected exp0.7 change: $path" >&2; exit 1 ;;
+            esac
+          done <<< "$changed"
+          echo "PASS: exp0.6 hardware baseline is frozen; only timing/EDID handoff inputs changed."
+
+      - name: Initialize exact pinned submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1 --jobs 4 arm-trusted-firmware edk2 edk2-platforms edk2-non-osi
+          test "$(git -C arm-trusted-firmware rev-parse HEAD)" = a5c580fd539929af41cf483b7c1434db261dd51b
+          test "$(git -C edk2 rev-parse HEAD)" = 7bbf1f2022f381f48cfb5411df9e5157ee0291a5
+          test "$(git -C edk2-platforms rev-parse HEAD)" = "$BASELINE_EDK2_PLATFORMS"
+          test "$(git -C edk2-non-osi rev-parse HEAD)" = 66b41e9308a6711cd74e541366a8d9ec7a949d45
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y \
+            acpica-tools binutils-aarch64-linux-gnu build-essential device-tree-compiler \
+            libfdt-dev gettext git gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            python3 python3-pyelftools uuid-dev zip
+
+      - name: Validate layered patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          patches=(
+            temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch
+            temporary-patches/edk2-platforms/0005-RPi5-RTC-and-settings-persistence.patch
+            temporary-patches/edk2-platforms/0006-RPi5-narrow-SOCB-resource-window-for-GPU.patch
+            temporary-patches/edk2-platforms/0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch
+            temporary-patches/edk2-platforms/0002-RPi5-keep-microSD-powered-during-UEFI.patch
+            temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch
+          )
+          for p in "${patches[@]}"; do
+            extra=()
+            [[ "$p" == *0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch ]] && extra=(--ignore-space-change)
+            git -C edk2-platforms apply "${extra[@]}" --check "${GITHUB_WORKSPACE}/$p"
+            git -C edk2-platforms apply "${extra[@]}" "${GITHUB_WORKSPACE}/$p"
+          done
+          python3 tools/apply-display-handoff.py edk2-platforms
+          python3 tests/display_resource_test.py edk2-platforms | tee DISPLAY_RESOURCE_TESTS.log
+          grep -Fq 'RPI_MBOX_GET_EDID_BLOCK_DISPLAY' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
+          grep -Fq 'RPI_MBOX_GET_DISPLAY_TIMING' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
+          grep -Fq 'Rpi5DisplayHandoff' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq 'EFI_VARIABLE_RUNTIME_ACCESS' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          ! grep -Fq 'EFI_VARIABLE_NON_VOLATILE' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          python3 tools/apply-display-handoff.py edk2-platforms --reverse
+          for ((i=${#patches[@]}-1; i>=0; i--)); do
+            p="${patches[$i]}"; extra=()
+            [[ "$p" == *0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch ]] && extra=(--ignore-space-change)
+            git -C edk2-platforms apply "${extra[@]}" --reverse "${GITHUB_WORKSPACE}/$p"
+          done
+          git -C edk2-platforms diff --exit-code
+
+      - name: Build ${{ matrix.name }} candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p overlays
+          curl --fail --location --retry 3 -o bcm2712-rpi-5-b.dtb "$RPI_FIRMWARE_URL/raw/$DTB_VERSION/boot/bcm2712-rpi-5-b.dtb"
+          curl --fail --location --retry 3 -o overlays/bcm2712d0.dtbo "$RPI_FIRMWARE_URL/raw/$D0_OVERLAY_VERSION/boot/overlays/bcm2712d0.dtbo"
+          chmod +x build-display-resource-fix.sh build.sh
+          ./build-display-resource-fix.sh --model 5 --debug "${{ matrix.debug }}" 2>&1 | tee DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+          test -f RPI_EFI.fd
+          git -C edk2-platforms diff --exit-code
+          grep -Fq 'Applied direct-SDIO Wi-Fi patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+          grep -Fq 'Applied RTC/settings persistence patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+          grep -Fq 'Applied SOCB/GPU resource-scope patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+          grep -Fq 'Applied RPi5 display timing/EDID handoff transform' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+          grep -Fq 'Applied experimental RPi5 fail-safe fan patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+          grep -Fq 'Applied RPi5 microSD UEFI power patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+          grep -Fq 'Applied RPi5 Windows fan safe-handoff and mailbox-routing patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+
+      - name: Re-run protected regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          fdtoverlay -i bcm2712-rpi-5-b.dtb -o /tmp/wifi-d0.dtb overlays/bcm2712d0.dtbo
+          p="${GITHUB_WORKSPACE}/temporary-patches/edk2-platforms/0004-RPi5-WiFi-direct-SDIO-NDIS.patch"
+          git -C edk2-platforms apply "$p"
+          python3 tests/wifi_pinctrl_test.py edk2-platforms/Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c bcm2712-rpi-5-b.dtb /tmp/wifi-d0.dtb
+          git -C edk2-platforms apply --reverse "$p"
+          p="${GITHUB_WORKSPACE}/temporary-patches/edk2-platforms/0005-RPi5-RTC-and-settings-persistence.patch"
+          git -C edk2-platforms apply "$p"
+          python3 tests/rtc_settings_test.py --firmware RPI_EFI.fd | tee RTC_SETTINGS_TESTS.log
+          git -C edk2-platforms apply --reverse "$p"
+          git -C edk2-platforms diff --exit-code
+
+      - name: Verify exp0.6 ACPI resource fix remains
+        shell: bash
+        run: |
+          set -euo pipefail
+          aml="$(find Build/RPi5 -type f -iname 'Dsdt.aml' -print -quit)"
+          test -n "$aml"
+          iasl -d -p /tmp/RPi5DisplayHandoff "$aml"
+          ! grep -Fqi '0x000000107C000000' /tmp/RPi5DisplayHandoff.dsl
+          grep -Fqi '0x000000107D001000' /tmp/RPi5DisplayHandoff.dsl
+          grep -Fqi '0x000000107C013880' /tmp/RPi5DisplayHandoff.dsl
+          cp /tmp/RPi5DisplayHandoff.dsl DSDT_DISPLAY_HANDOFF_${{ matrix.name }}.dsl
+
+      - name: Package ${{ matrix.name }} candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > DISPLAY_HANDOFF_README.txt <<'EOF'
+          Raspberry Pi 5 UEFI display timing/EDID handoff candidate exp0.7
+          =================================================================
+          Parent baseline: exp0.6 resource-fix firmware.
+          Existing fan/temp, direct-SDIO Wi-Fi, RTC/settings, SD, PCIe/NVMe,
+          USB, HDMI programming and GPU resource addresses remain unchanged.
+          The only new runtime behavior reads the Raspberry Pi firmware's active
+          display timing and EDID and publishes them in a volatile UEFI variable
+          named Rpi5DisplayHandoff for the Windows display-only driver.
+          No 60 Hz value is hard-coded and no persistent NVRAM variable is used.
+          EOF
+          {
+            printf 'candidate_commit %s\n' "$(git rev-parse HEAD)"
+            printf 'exp06_baseline %s\n' "$EXP06_BASELINE"
+            for module in arm-trusted-firmware edk2 edk2-non-osi edk2-platforms; do
+              printf '%s %s\n' "$module" "$(git -C "$module" rev-parse HEAD)"
+            done
+          } > SOURCE_REVISIONS.txt
+          sha256sum RPI_EFI.fd config.txt DISPLAY_HANDOFF_README.txt SOURCE_REVISIONS.txt \
+            DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log DISPLAY_RESOURCE_TESTS.log RTC_SETTINGS_TESTS.log \
+            DSDT_DISPLAY_HANDOFF_${{ matrix.name }}.dsl > SHA256SUMS_DISPLAY_HANDOFF_${{ matrix.name }}.txt
+          mkdir package
+          cp RPI_EFI.fd config.txt DISPLAY_HANDOFF_README.txt SOURCE_REVISIONS.txt \
+            DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log DISPLAY_RESOURCE_TESTS.log RTC_SETTINGS_TESTS.log \
+            DSDT_DISPLAY_HANDOFF_${{ matrix.name }}.dsl SHA256SUMS_DISPLAY_HANDOFF_${{ matrix.name }}.txt package/
+          cp bcm2712-rpi-5-b.dtb package/
+          cp -r overlays package/
+          (cd package && zip -q -r ../RPi5_UEFI_DisplayHandoff_exp0.7_${{ matrix.name }}.zip .)
+
+      - name: Upload ${{ matrix.name }} candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: RPi5_UEFI_DisplayHandoff_exp0.7_${{ matrix.name }}
+          path: RPi5_UEFI_DisplayHandoff_exp0.7_${{ matrix.name }}.zip
+          if-no-files-found: error
+          retention-days: 30

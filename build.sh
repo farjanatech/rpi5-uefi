@@ -137,8 +137,14 @@ EDK2_PLATFORMS_SD_POWER_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/000
 EDK2_PLATFORMS_SD_POWER_PATCH_APPLIED=0
 EDK2_PLATFORMS_FAN_WINDOWS_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch"
 EDK2_PLATFORMS_FAN_WINDOWS_PATCH_APPLIED=0
+EDK2_PLATFORMS_DISPLAY_HANDOFF_APPLIER="${WORKSPACE}/tools/apply-display-handoff.py"
+EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH_APPLIED=0
 
 restore_edk2_sd_patch() {
+    if [[ "${EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH_APPLIED}" -eq 1 ]]; then
+        python3 "${EDK2_PLATFORMS_DISPLAY_HANDOFF_APPLIER}" "${WORKSPACE}/edk2-platforms" --reverse
+        echo "Restored RPi5 display timing/EDID handoff transform"
+    fi
     if [[ "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH_APPLIED}" -eq 1 ]]; then
         git -C "${WORKSPACE}/edk2-platforms" apply --reverse "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH}"
         echo "Restored RPi5 Windows fan handoff/mailbox patch"
@@ -204,6 +210,10 @@ if [[ "${MODEL}" == "5" ]]; then
         git -C "${WORKSPACE}/edk2-platforms" apply --check --verbose "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH}" >&2 || true
         exit 1
     fi
+
+    python3 "${EDK2_PLATFORMS_DISPLAY_HANDOFF_APPLIER}" "${WORKSPACE}/edk2-platforms"
+    EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH_APPLIED=1
+    echo "Applied RPi5 display timing/EDID handoff transform"
 fi
 
 "${RPI_BUILD_MAKE}" -C "${WORKSPACE}/edk2/BaseTools" || exit
