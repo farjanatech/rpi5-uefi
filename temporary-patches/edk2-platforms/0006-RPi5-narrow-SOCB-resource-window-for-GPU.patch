@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: farjanatech <168655490+farjanatech@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 13:30:00 +0600
+Subject: [PATCH] Platform/RPi5: narrow SOCB producer resources for GPU sibling
+
+The current SOCB ACPI0004 container advertises the complete BCM2712 legacy
+MMIO aperture (0x107c000000-0x107fffffff) as a producer resource. GPU0 is a
+sibling of SOCB, not its child, yet six of GPU0's display resources reside
+inside that aperture. Windows reports the GPU device with Code 12 and
+STATUS_CONFLICTING_ADDRESSES.
+
+Keep SOCB's DMA translation unchanged, but advertise only the MMIO ranges
+actually consumed by its children in the Windows-oriented stack: PL011 and
+the property-mailbox temperature provider added by the existing exp.5B
+handoff patch. This removes GPU0 from the producer window without changing
+any GPU, IRQ, DMA, fan, SD, Wi-Fi, PCIe, USB, framebuffer or boot settings.
+
+This is an isolated hardware-test candidate; it does not claim that Code 12
+is fixed until validated on the Raspberry Pi 5.
+---
+ Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
+--- a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
++++ b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
+@@
+       Method (_CRS, 0, Serialized) {
+         //
+-        // Container devices with _DMA must have _CRS.
+-        // TO-DO: Is describing the entire MMIO range in a single resource
+-        // enough, or do we need to list each individual resource consumed
+-        // by the child devices?
++        // SOCB is a producer for its children only. Do not advertise the full
++        // BCM2712 legacy aperture here: GPU0 is a sibling and owns display
++        // resources inside that aperture.
+         //
+         Name (RBUF, ResourceTemplate () {
+           QWORDMEMORY_BUF (00, ResourceProducer)
++          QWORDMEMORY_BUF (01, ResourceProducer)
+         })
+-        QWORD_SET (00, BCM2712_LEGACY_BUS_BASE, BCM2712_LEGACY_BUS_LENGTH, 0)
++        QWORD_SET (00, PL011_DEBUG_BASE_ADDRESS, PL011_DEBUG_LENGTH, 0)
++        // TMP0 is added by the existing Windows fan-safe handoff patch.
++        QWORD_SET (01, 0x000000107C013880, 0x40, 0)
+         Return (RBUF)
+       }
