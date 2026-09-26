@@ -81,13 +81,13 @@ EFI_STATUS
     replace_one(proto, "typedef struct {\n  SET_POWER_STATE",
         api + "typedef struct {\n  SET_POWER_STATE", ns.reverse)
     replace_one(proto,
-        "  SET_RTC                SetRtc;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
-        "  SET_RTC                SetRtc;\n  GET_DISPLAY_TIMING     GetDisplayTiming;\n  GET_EDID_BLOCK_DISPLAY GetEdidBlockDisplay;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
+        "  GET_TEMPERATURE        GetTemperature;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
+        "  GET_TEMPERATURE        GetTemperature;\n  GET_DISPLAY_TIMING     GetDisplayTiming;\n  GET_EDID_BLOCK_DISPLAY GetEdidBlockDisplay;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
         ns.reverse)
 
     fw = r / "Platform/RaspberryPi/Drivers/RpiFirmwareDxe/RpiFirmwareDxe.c"
     structs = """\
-
+#pragma pack(push, 1)
 typedef struct {
   RPI_FW_BUFFER_HEAD            BufferHead;
   RPI_FW_TAG_HEAD               TagHead;
@@ -107,10 +107,12 @@ typedef struct {
   RPI_FW_EDID_BLOCK_DISPLAY_TAG  TagBody;
   UINT32                         EndTag;
 } RPI_FW_GET_EDID_BLOCK_DISPLAY_CMD;
+#pragma pack(pop)
+
 """
     replace_one(fw,
-        "} RPI_FW_NOTIFY_GPIO_SET_CFG_CMD;\n#pragma pack()",
-        "} RPI_FW_NOTIFY_GPIO_SET_CFG_CMD;" + structs + "#pragma pack()",
+        "STATIC UINTN mMboxBaseAddress;",
+        structs + "STATIC UINTN mMboxBaseAddress;",
         ns.reverse)
     funcs = """\
 STATIC
@@ -202,8 +204,12 @@ RpiFirmwareGetEdidBlockDisplay (
         funcs + "STATIC RASPBERRY_PI_FIRMWARE_PROTOCOL mRpiFirmwareProtocol = {",
         ns.reverse)
     replace_one(fw,
-        "  RpiFirmwareSetRtc,\n};",
-        "  RpiFirmwareSetRtc,\n  RpiFirmwareGetDisplayTiming,\n  RpiFirmwareGetEdidBlockDisplay,\n};",
+        "  RpiFirmwareGetTemperature,\n};",
+        "  RpiFirmwareGetTemperature,\n  RpiFirmwareGetDisplayTiming,\n  RpiFirmwareGetEdidBlockDisplay,\n};",
+        ns.reverse)
+    replace_one(fw,
+        "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n",
+        "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetDisplayTiming);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetEdidBlockDisplay);\n",
         ns.reverse)
 
     disp = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c"
