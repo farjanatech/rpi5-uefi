@@ -5,11 +5,20 @@ from pathlib import Path
 import argparse
 
 def replace_one(path: Path, old: str, new: str, reverse: bool) -> None:
-    text = path.read_text()
+    # Git's Raspberry Pi sources use CRLF in several files.  Work on a
+    # normalized in-memory view, but restore the file's original newline
+    # convention exactly so applying/reversing this experiment is byte-clean.
+    raw = path.read_bytes()
+    text_raw = raw.decode("utf-8")
+    newline = "\r\n" if "\r\n" in text_raw else "\n"
+    text = text_raw.replace("\r\n", "\n")
     src, dst = (new, old) if reverse else (old, new)
     if text.count(src) != 1:
         raise SystemExit(f"{path}: expected exactly one handoff anchor, found {text.count(src)}")
-    path.write_text(text.replace(src, dst, 1))
+    result = text.replace(src, dst, 1)
+    if newline == "\r\n":
+        result = result.replace("\n", "\r\n")
+    path.write_bytes(result.encode("utf-8"))
 
 def main() -> None:
     ap = argparse.ArgumentParser()
