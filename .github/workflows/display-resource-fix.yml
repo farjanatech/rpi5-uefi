@@ -109,12 +109,23 @@ jobs:
             temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch
           )
           for p in "${patches[@]}"; do
-            git -C edk2-platforms apply --check "${GITHUB_WORKSPACE}/$p"
-            git -C edk2-platforms apply "${GITHUB_WORKSPACE}/$p"
+            extra=()
+            if [[ "$p" == *0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch ]]; then
+              # Match build.sh exactly; this protected baseline patch intentionally
+              # tolerates line-ending/whitespace differences across the layered stack.
+              extra=(--ignore-space-change)
+            fi
+            git -C edk2-platforms apply "${extra[@]}" --check "${GITHUB_WORKSPACE}/$p"
+            git -C edk2-platforms apply "${extra[@]}" "${GITHUB_WORKSPACE}/$p"
           done
           python3 tests/display_resource_test.py edk2-platforms | tee DISPLAY_RESOURCE_TESTS.log
           for ((i=${#patches[@]}-1; i>=0; i--)); do
-            git -C edk2-platforms apply --reverse "${GITHUB_WORKSPACE}/${patches[$i]}"
+            p="${patches[$i]}"
+            extra=()
+            if [[ "$p" == *0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch ]]; then
+              extra=(--ignore-space-change)
+            fi
+            git -C edk2-platforms apply "${extra[@]}" --reverse "${GITHUB_WORKSPACE}/$p"
           done
           git -C edk2-platforms diff --exit-code
 
