@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - display/edid-timing-handoff
+      - master
     paths:
       - 'build.sh'
       - 'tools/apply-display-handoff.py'
@@ -12,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: display-handoff-${{ github.ref }}
@@ -211,3 +212,39 @@ jobs:
           path: RPi5_UEFI_DisplayHandoff_exp0.7_${{ matrix.name }}.zip
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish exp0.7 GitHub pre-release from master
+        if: github.ref == 'refs/heads/master' && matrix.name == 'RELEASE'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          zip_name="RPi5_UEFI_DisplayHandoff_exp0.7_RELEASE.zip"
+          sha_name="${zip_name}.sha256"
+          sha256sum "$zip_name" > "$sha_name"
+          cat > RELEASE_NOTES_exp0.7.md <<'EOF'
+          # Raspberry Pi 5 UEFI exp0.7 — Display Timing/EDID Handoff
+
+          This is the UEFI candidate paired with **Rpi5Display 0.1.8**.
+
+          It includes the exp0.6 SOCB/GPU resource fix that enabled the working 0.1.7 framebuffer desktop, then adds the exp0.7 firmware-side display handoff:
+
+          - maps framebuffer display index 0 to the actual Raspberry Pi firmware display ID;
+          - reads the active firmware timing (pixel clock, active size, sync positions and totals);
+          - reads and checksum-validates the monitor EDID;
+          - publishes a versioned volatile `Rpi5DisplayHandoff` runtime variable for Windows driver 0.1.8;
+          - preserves the exp0.6 fan/temp, direct-SDIO Wi-Fi, RTC/settings, microSD, NVMe/PCIe, USB and display-resource baseline.
+
+          **Status: pre-release / hardware-test candidate.** RELEASE and DEBUG hosted builds plus protected regressions passed, but the new exp0.7 timing/EDID handoff still needs physical Raspberry Pi 5 validation. Keep your previous working UEFI available for rollback.
+
+          For the 0.1.8 test, replace the existing `RPI_EFI.fd` with the RELEASE candidate from this ZIP and retain the rest of the boot partition unless you intentionally need the packaged DTB/config files.
+          EOF
+          tag="rpi5-display-uefi-exp0.7"
+          title="Raspberry Pi 5 UEFI exp0.7 — Display Timing/EDID Handoff"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$zip_name" "$sha_name" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$tag" --title "$title" --notes-file RELEASE_NOTES_exp0.7.md --prerelease --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "$zip_name" "$sha_name" --target "$GITHUB_SHA" --title "$title" --notes-file RELEASE_NOTES_exp0.7.md --prerelease --repo "$GITHUB_REPOSITORY"
+          fi
