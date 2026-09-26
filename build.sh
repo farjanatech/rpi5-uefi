@@ -137,13 +137,13 @@ EDK2_PLATFORMS_SD_POWER_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/000
 EDK2_PLATFORMS_SD_POWER_PATCH_APPLIED=0
 EDK2_PLATFORMS_FAN_WINDOWS_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch"
 EDK2_PLATFORMS_FAN_WINDOWS_PATCH_APPLIED=0
-EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH="${WORKSPACE}/temporary-patches/edk2-platforms/0007-RPi5-publish-display-timing-and-EDID-handoff.patch"
+EDK2_PLATFORMS_DISPLAY_HANDOFF_APPLIER="${WORKSPACE}/tools/apply-display-handoff.py"
 EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH_APPLIED=0
 
 restore_edk2_sd_patch() {
     if [[ "${EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH_APPLIED}" -eq 1 ]]; then
-        git -C "${WORKSPACE}/edk2-platforms" apply --reverse "${EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH}"
-        echo "Restored RPi5 display timing/EDID handoff patch"
+        python3 "${EDK2_PLATFORMS_DISPLAY_HANDOFF_APPLIER}" "${WORKSPACE}/edk2-platforms" --reverse
+        echo "Restored RPi5 display timing/EDID handoff transform"
     fi
     if [[ "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH_APPLIED}" -eq 1 ]]; then
         git -C "${WORKSPACE}/edk2-platforms" apply --reverse "${EDK2_PLATFORMS_FAN_WINDOWS_PATCH}"
@@ -211,17 +211,9 @@ if [[ "${MODEL}" == "5" ]]; then
         exit 1
     fi
 
-    if git -C "${WORKSPACE}/edk2-platforms" apply --check "${EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH}" 2>/dev/null; then
-        git -C "${WORKSPACE}/edk2-platforms" apply "${EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH}"
-        EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH_APPLIED=1
-        echo "Applied RPi5 display timing/EDID handoff patch"
-    elif git -C "${WORKSPACE}/edk2-platforms" apply --reverse --check "${EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH}" 2>/dev/null; then
-        echo "RPi5 display timing/EDID handoff patch is already applied"
-    else
-        echo "RPi5 display timing/EDID handoff patch does not apply" >&2
-        git -C "${WORKSPACE}/edk2-platforms" apply --check --verbose "${EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH}" >&2 || true
-        exit 1
-    fi
+    python3 "${EDK2_PLATFORMS_DISPLAY_HANDOFF_APPLIER}" "${WORKSPACE}/edk2-platforms"
+    EDK2_PLATFORMS_DISPLAY_HANDOFF_PATCH_APPLIED=1
+    echo "Applied RPi5 display timing/EDID handoff transform"
 fi
 
 "${RPI_BUILD_MAKE}" -C "${WORKSPACE}/edk2/BaseTools" || exit
