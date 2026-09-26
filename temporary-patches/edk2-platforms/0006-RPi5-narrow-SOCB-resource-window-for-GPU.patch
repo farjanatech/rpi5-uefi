@@ -18,13 +18,13 @@ any GPU, IRQ, DMA, fan, SD, Wi-Fi, PCIe, USB, framebuffer or boot settings.
 This is an isolated hardware-test candidate; it does not claim that Code 12
 is fixed until validated on the Raspberry Pi 5.
 ---
- Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl | 13 ++++++++-----
- 1 file changed, 8 insertions(+), 5 deletions(-)
+ Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
 
 diff --git a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
 --- a/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
 +++ b/Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl
-@@
+@@ -52,13 +52,15 @@
        Method (_CRS, 0, Serialized) {
          //
 -        // Container devices with _DMA must have _CRS.
