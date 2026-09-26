@@ -6,7 +6,7 @@ on:
       - display/edid-timing-handoff
     paths:
       - 'build.sh'
-      - 'temporary-patches/edk2-platforms/0007-RPi5-publish-display-timing-and-EDID-handoff.patch'
+      - 'tools/apply-display-handoff.py'
       - '.github/workflows/display-handoff.yml'
   workflow_dispatch:
 
@@ -63,7 +63,7 @@ jobs:
           while IFS= read -r path; do
             [[ -z "$path" ]] && continue
             case "$path" in
-              build.sh|temporary-patches/edk2-platforms/0007-RPi5-publish-display-timing-and-EDID-handoff.patch|.github/workflows/display-handoff.yml)
+              build.sh|tools/apply-display-handoff.py|.github/workflows/display-handoff.yml)
                 ;;
               *) echo "Unexpected exp0.7 change: $path" >&2; exit 1 ;;
             esac
@@ -102,7 +102,6 @@ jobs:
             temporary-patches/edk2-platforms/0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch
             temporary-patches/edk2-platforms/0002-RPi5-keep-microSD-powered-during-UEFI.patch
             temporary-patches/edk2-platforms/0003-RPi5-Windows-fan-safe-handoff-and-mailbox-routing.patch
-            temporary-patches/edk2-platforms/0007-RPi5-publish-display-timing-and-EDID-handoff.patch
           )
           for p in "${patches[@]}"; do
             extra=()
@@ -110,12 +109,14 @@ jobs:
             git -C edk2-platforms apply "${extra[@]}" --check "${GITHUB_WORKSPACE}/$p"
             git -C edk2-platforms apply "${extra[@]}" "${GITHUB_WORKSPACE}/$p"
           done
+          python3 tools/apply-display-handoff.py edk2-platforms
           python3 tests/display_resource_test.py edk2-platforms | tee DISPLAY_RESOURCE_TESTS.log
           grep -Fq 'RPI_MBOX_GET_EDID_BLOCK_DISPLAY' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
           grep -Fq 'RPI_MBOX_GET_DISPLAY_TIMING' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
           grep -Fq 'Rpi5DisplayHandoff' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           grep -Fq 'EFI_VARIABLE_RUNTIME_ACCESS' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           ! grep -Fq 'EFI_VARIABLE_NON_VOLATILE' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          python3 tools/apply-display-handoff.py edk2-platforms --reverse
           for ((i=${#patches[@]}-1; i>=0; i--)); do
             p="${patches[$i]}"; extra=()
             [[ "$p" == *0001-RPi5-add-fail-safe-fan-control-and-ACPI-interface.patch ]] && extra=(--ignore-space-change)
@@ -137,7 +138,7 @@ jobs:
           grep -Fq 'Applied direct-SDIO Wi-Fi patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
           grep -Fq 'Applied RTC/settings persistence patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
           grep -Fq 'Applied SOCB/GPU resource-scope patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
-          grep -Fq 'Applied RPi5 display timing/EDID handoff patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
+          grep -Fq 'Applied RPi5 display timing/EDID handoff transform' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
           grep -Fq 'Applied experimental RPi5 fail-safe fan patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
           grep -Fq 'Applied RPi5 microSD UEFI power patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
           grep -Fq 'Applied RPi5 Windows fan safe-handoff and mailbox-routing patch' DISPLAY_HANDOFF_BUILD_${{ matrix.name }}.log
