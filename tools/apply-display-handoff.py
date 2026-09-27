@@ -406,10 +406,18 @@ typedef struct {
 #define RPI5_PV_CONTROL_EN       BIT0
 #define RPI5_PV_VCONTROL_VIDEN   BIT0
 #define RPI5_PV_VCONTROL_INTERLACE BIT4
-#define RPI5_PV_INT_VFP_START    BIT7
-#define RPI5_PV_MEASURE_FRAMES   4U
-#define RPI5_PV_EDGE_WAIT_LOOPS  25000U
-#define RPI5_PV_EDGE_WAIT_US     10U
+
+/*
+ * BCM2712 exposes both HDMI frame counters in the shared "hd" register block.
+ * Raspberry Pi Linux maps HDMI0 FRAME_COUNT at +0x60 and HDMI1 at +0x64.
+ * The AXI peripheral window is CPU-visible at 0x10_7c72_0000 on Pi 5.
+ */
+#define RPI5_HDMI_HD_BASE             0x107C720000ULL
+#define RPI5_HDMI0_FRAME_COUNT        0x60U
+#define RPI5_HDMI1_FRAME_COUNT        0x64U
+#define RPI5_HDMI_MEASURE_FRAMES      4U
+#define RPI5_HDMI_COUNTER_WAIT_LOOPS  50000U
+#define RPI5_HDMI_COUNTER_WAIT_US     10U
 
 #pragma pack(1)
 typedef struct {
@@ -719,63 +727,99 @@ CapturePixelValveRegisters (
 }
 
 STATIC
-BOOLEAN
-WaitPixelValveVfpStart (
-  IN UINT64 Base,
-  OUT UINT64 *TimestampNs
+UINTN
+GetHdmiFrameCounterAddress (
+  IN UINT32 PixelValve
   )
 {
-  UINT32 Attempt;
-
-  if (TimestampNs == NULL) {
-    return FALSE;
-  }
-
-  MmioWrite32 ((UINTN)(Base + RPI5_PV_INTSTAT), RPI5_PV_INT_VFP_START);
-  for (Attempt = 0; Attempt < RPI5_PV_EDGE_WAIT_LOOPS; Attempt++) {
-    if ((MmioRead32 ((UINTN)(Base + RPI5_PV_INTSTAT)) &
-         RPI5_PV_INT_VFP_START) != 0) {
-      *TimestampNs = GetTimeInNanoSecond (GetPerformanceCounter ());
-      MmioWrite32 ((UINTN)(Base + RPI5_PV_INTSTAT), RPI5_PV_INT_VFP_START);
-      return TRUE;
-    }
-    MicroSecondDelay (RPI5_PV_EDGE_WAIT_US);
-  }
-
-  return FALSE;
+  return (UINTN)(RPI5_HDMI_HD_BASE +
+    (PixelValve == 0 ? RPI5_HDMI0_FRAME_COUNT : RPI5_HDMI1_FRAME_COUNT));
 }
 
 STATIC
 BOOLEAN
-MeasurePixelValveFramePeriod (
-  IN UINT64 Base,
-  OUT UINT64 *FramePeriodNs
+MeasureHdmiFramePeriod (
+  IN UINT32 PixelValve,
+  OUT UINT64 *FramePeriodNs,
+  OUT UINT32 *FirstCounter,
+  OUT UINT32 *LastCounter
   )
 {
-  UINT64 First;
-  UINT64 Last;
-  UINT64 Stamp;
-  UINT32 Frame;
+  UINTN CounterAddress;
+  UINT32 Initial;
+  UINT32 First;
+  UINT32 Current;
+  UINT32 Delta;
+  UINT32 Attempt;
+  UINT64 FirstNs;
+  UINT64 LastNs;
 
-  if (FramePeriodNs == NULL ||
-      !WaitPixelValveVfpStart (Base, &First)) {
+  if (PixelValve > 1 || FramePeriodNs == NULL) {
     return FALSE;
   }
 
-  Last = First;
-  for (Frame = 0; Frame < RPI5_PV_MEASURE_FRAMES; Frame++) {
-    if (!WaitPixelValveVfpStart (Base, &Stamp)) {
-      return FALSE;
+  CounterAddress = GetHdmiFrameCounterAddress (PixelValve);
+  Initial = MmioRead32 (CounterAddress);
+  First = Initial;
+  FirstNs = 0;
+
+  /*
+   * First synchronize to a real frame-counter transition. This is read-only:
+   * unlike the previous VFP-status experiment, UEFI never touches PV_INTEN or
+   * PV_INTSTAT, leaving interrupt ownership entirely to Windows.
+   */
+  for (Attempt = 0; Attempt < RPI5_HDMI_COUNTER_WAIT_LOOPS; Attempt++) {
+    Current = MmioRead32 (CounterAddress);
+    if (Current != Initial) {
+      First = Current;
+      FirstNs = GetTimeInNanoSecond (GetPerformanceCounter ());
+      break;
     }
-    Last = Stamp;
+    MicroSecondDelay (RPI5_HDMI_COUNTER_WAIT_US);
   }
-
-  if (Last <= First) {
+  if (FirstNs == 0) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display HDMI%u frame counter did not advance initial=0x%x addr=0x%Lx\\n",
+      PixelValve, Initial, (UINT64)CounterAddress));
     return FALSE;
   }
 
-  *FramePeriodNs = (Last - First) / RPI5_PV_MEASURE_FRAMES;
-  return *FramePeriodNs != 0;
+  LastNs = FirstNs;
+  Current = First;
+  for (Attempt = 0; Attempt < RPI5_HDMI_COUNTER_WAIT_LOOPS; Attempt++) {
+    Current = MmioRead32 (CounterAddress);
+    Delta = Current - First;
+    if (Delta >= RPI5_HDMI_MEASURE_FRAMES) {
+      LastNs = GetTimeInNanoSecond (GetPerformanceCounter ());
+      break;
+    }
+    MicroSecondDelay (RPI5_HDMI_COUNTER_WAIT_US);
+  }
+
+  Delta = Current - First;
+  if (Delta < RPI5_HDMI_MEASURE_FRAMES || LastNs <= FirstNs) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display HDMI%u frame counter measurement timed out first=0x%x last=0x%x delta=%u\\n",
+      PixelValve, First, Current, Delta));
+    return FALSE;
+  }
+
+  *FramePeriodNs = (LastNs - FirstNs) / Delta;
+  if (*FramePeriodNs == 0) {
+    return FALSE;
+  }
+
+  if (FirstCounter != NULL) {
+    *FirstCounter = First;
+  }
+  if (LastCounter != NULL) {
+    *LastCounter = Current;
+  }
+
+  DEBUG ((DEBUG_INFO,
+    "Rpi5Display HDMI%u frame counter cadence first=0x%x last=0x%x delta=%u period=%Luns\\n",
+    PixelValve, First, Current, Delta, *FramePeriodNs));
+  return TRUE;
 }
 
 STATIC
@@ -802,6 +846,8 @@ ReadPixelValveTiming (
   UINT32 VTotal;
   UINT32 HorizontalScale;
   UINT64 FramePeriodNs;
+  UINT32 FirstFrameCounter;
+  UINT32 LastFrameCounter;
   UINT64 FramePixels;
   UINT64 PixelClockHz;
   UINT64 Refresh;
@@ -872,9 +918,16 @@ ReadPixelValveTiming (
       continue;
     }
 
-    if (!MeasurePixelValveFramePeriod (Base, &FramePeriodNs)) {
+    FirstFrameCounter = 0;
+    LastFrameCounter = 0;
+    if (!MeasureHdmiFramePeriod (
+           PixelValve,
+           &FramePeriodNs,
+           &FirstFrameCounter,
+           &LastFrameCounter)) {
       DEBUG ((DEBUG_WARN,
-        "Rpi5Display PixelValve%u VFP measurement timed out\\n", PixelValve));
+        "Rpi5Display PixelValve%u / HDMI%u frame-count cadence unavailable\\n",
+        PixelValve, PixelValve));
       continue;
     }
 
@@ -924,9 +977,11 @@ ReadPixelValveTiming (
 
     DEBUG ((DEBUG_INFO,
       "Rpi5Display handoff stage=timing-selected source=pixelvalve pv=%u "
-      "display=%u scale=%u mode=%ux%u clock=%uKHz totals=%ux%u period=%Luns refresh=%u\\n",
-      PixelValve, *Display, HorizontalScale, Width, Height, Timing->Clock,
-      Timing->HTotal, Timing->VTotal, FramePeriodNs, Timing->VRefresh));
+      "display=%u hdmi=%u scale=%u mode=%ux%u clock=%uKHz totals=%ux%u "
+      "period=%Luns refresh=%u frameCounter=0x%x->0x%x\\n",
+      PixelValve, *Display, PixelValve, HorizontalScale, Width, Height,
+      Timing->Clock, Timing->HTotal, Timing->VTotal, FramePeriodNs,
+      Timing->VRefresh, FirstFrameCounter, LastFrameCounter));
     return TRUE;
   }
 
