@@ -554,6 +554,8 @@ ReadDisplayEdid (
   )
 {
   EFI_STATUS Status;
+  UINT32 Block;
+  UINT32 WantedBlocks;
   UINT32 ReadLimit;
 
   if (Edid == NULL || BlocksRead == NULL || Complete == NULL) {
