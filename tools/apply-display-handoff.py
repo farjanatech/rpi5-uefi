@@ -408,8 +408,8 @@ typedef struct {
 #define RPI5_PV_VCONTROL_INTERLACE BIT4
 #define RPI5_PV_INT_VFP_START    BIT7
 #define RPI5_PV_MEASURE_FRAMES   4U
-#define RPI5_PV_EDGE_WAIT_LOOPS  5000U
-#define RPI5_PV_EDGE_WAIT_US     50U
+#define RPI5_PV_EDGE_WAIT_LOOPS  25000U
+#define RPI5_PV_EDGE_WAIT_US     10U
 
 #pragma pack(1)
 typedef struct {
