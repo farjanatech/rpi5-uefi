@@ -278,11 +278,11 @@ RpiFirmwareGetEdidBlockDisplay (
     display_inf = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.inf"
     replace_one(display_inf,
         "  gEfiCpuArchProtocolGuid\\n  gEfiSimpleFileSystemProtocolGuid\\n",
-        "  gEfiCpuArchProtocolGuid\\n  gEfiVariableWriteArchProtocolGuid\\n  gEfiSimpleFileSystemProtocolGuid\\n",
+        "  gEfiCpuArchProtocolGuid\\n  gEfiVariableArchProtocolGuid\\n  gEfiVariableWriteArchProtocolGuid\\n  gEfiSimpleFileSystemProtocolGuid\\n",
         ns.reverse)
     replace_one(display_inf,
         "  gEfiCpuArchProtocolGuid AND gRaspberryPiFirmwareProtocolGuid\\n",
-        "  gEfiCpuArchProtocolGuid AND gRaspberryPiFirmwareProtocolGuid AND gEfiVariableWriteArchProtocolGuid\\n",
+        "  gEfiCpuArchProtocolGuid AND gRaspberryPiFirmwareProtocolGuid AND gEfiVariableArchProtocolGuid AND gEfiVariableWriteArchProtocolGuid\\n",
         ns.reverse)
 
     disp = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c"
