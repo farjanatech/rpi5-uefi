@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Portable regression for BCM2712 PixelValve timing decode + measured clock."""
 
-PV_HORZA = (148 << 16) | 44
-PV_HORZB = (88 << 16) | 1920
+# Physical Pi evidence: BCM2712 firmware exposed 1080p horizontal timing
+# in two-pixel clock units: 74/22/44/960 -> 148/44/88/1920.
+PV_HORZA = (74 << 16) | 22
+PV_HORZB = (44 << 16) | 960
 PV_VERTA = (36 << 16) | 5
 PV_VERTB = (4 << 16) | 1080
 FRAME_PERIOD_NS = 16_666_667
@@ -12,6 +14,15 @@ hsync = PV_HORZA & 0xFFFF
 hbp = (PV_HORZA >> 16) & 0xFFFF
 hactive = PV_HORZB & 0xFFFF
 hfp = (PV_HORZB >> 16) & 0xFFFF
+
+gop_width = 1920
+assert gop_width % hactive == 0
+horizontal_scale = gop_width // hactive
+assert horizontal_scale == 2
+hsync *= horizontal_scale
+hbp *= horizontal_scale
+hactive *= horizontal_scale
+hfp *= horizontal_scale
 vsync = PV_VERTA & 0xFFFF
 vbp = (PV_VERTA >> 16) & 0xFFFF
 vactive = PV_VERTB & 0xFFFF
@@ -37,4 +48,4 @@ assert vtotal == 1125
 assert 148_499 <= clock_khz <= 148_501
 assert refresh == 60
 
-print("PASS: BCM2712 PixelValve registers + measured VFP period derive 1080p60")
+print("PASS: BCM2712 two-pixel PixelValve units + measured VFP period derive 1080p60")
