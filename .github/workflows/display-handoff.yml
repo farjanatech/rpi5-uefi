@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - display/edid-timing-handoff
+      - sub-uefi-handoff-fix
       - master
     paths:
       - 'build.sh'
@@ -118,6 +119,10 @@ jobs:
           grep -Fq 'Rpi5DisplayHandoff' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           grep -Fq 'EFI_VARIABLE_RUNTIME_ACCESS' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           ! grep -Fq 'EFI_VARIABLE_NON_VOLATILE' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq 'gEfiVariableWriteArchProtocolGuid' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.inf
+          grep -Fq 'Rpi5DisplayReadyToBoot' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq 'stage=verify' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq 'GetVariable (' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           python3 tools/apply-display-handoff.py edk2-platforms --reverse
           for ((i=${#patches[@]}-1; i>=0; i--)); do
             p="${patches[$i]}"; extra=()
