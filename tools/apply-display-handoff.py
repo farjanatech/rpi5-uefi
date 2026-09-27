@@ -687,6 +687,295 @@ ReadDisplayEdid (
 }
 
 STATIC
+VOID
+CapturePixelValveRegisters (
+  IN UINT32 PixelValve
+  )
+{
+  RPI5_DISPLAY_PV_DIAG *Diag;
+  UINT64 Base;
+
+  if (PixelValve > 1) {
+    return;
+  }
+
+  Base = PixelValve == 0 ? RPI5_PV0_BASE : RPI5_PV1_BASE;
+  Diag = &mRpi5DisplayDiag.PixelValve[PixelValve];
+  Diag->Base = Base;
+  Diag->Control = MmioRead32 ((UINTN)(Base + RPI5_PV_CONTROL));
+  Diag->VControl = MmioRead32 ((UINTN)(Base + RPI5_PV_V_CONTROL));
+  Diag->Horza = MmioRead32 ((UINTN)(Base + RPI5_PV_HORZA));
+  Diag->Horzb = MmioRead32 ((UINTN)(Base + RPI5_PV_HORZB));
+  Diag->Verta = MmioRead32 ((UINTN)(Base + RPI5_PV_VERTA));
+  Diag->Vertb = MmioRead32 ((UINTN)(Base + RPI5_PV_VERTB));
+  Diag->Intstat = MmioRead32 ((UINTN)(Base + RPI5_PV_INTSTAT));
+
+  if ((Diag->Control & RPI5_PV_CONTROL_EN) != 0 &&
+      (Diag->VControl & RPI5_PV_VCONTROL_VIDEN) != 0) {
+    mRpi5DisplayDiag.StatusFlags |=
+      PixelValve == 0 ? RPI5_DISPLAY_DIAG_PV0_SCANNING
+                      : RPI5_DISPLAY_DIAG_PV1_SCANNING;
+  }
+}
+
+STATIC
+BOOLEAN
+WaitPixelValveVfpStart (
+  IN UINT64 Base,
+  OUT UINT64 *TimestampNs
+  )
+{
+  UINT32 Attempt;
+
+  if (TimestampNs == NULL) {
+    return FALSE;
+  }
+
+  MmioWrite32 ((UINTN)(Base + RPI5_PV_INTSTAT), RPI5_PV_INT_VFP_START);
+  for (Attempt = 0; Attempt < RPI5_PV_EDGE_WAIT_LOOPS; Attempt++) {
+    if ((MmioRead32 ((UINTN)(Base + RPI5_PV_INTSTAT)) &
+         RPI5_PV_INT_VFP_START) != 0) {
+      *TimestampNs = GetTimeInNanoSecond (GetPerformanceCounter ());
+      MmioWrite32 ((UINTN)(Base + RPI5_PV_INTSTAT), RPI5_PV_INT_VFP_START);
+      return TRUE;
+    }
+    MicroSecondDelay (RPI5_PV_EDGE_WAIT_US);
+  }
+
+  return FALSE;
+}
+
+STATIC
+BOOLEAN
+MeasurePixelValveFramePeriod (
+  IN UINT64 Base,
+  OUT UINT64 *FramePeriodNs
+  )
+{
+  UINT64 First;
+  UINT64 Last;
+  UINT64 Stamp;
+  UINT32 Frame;
+
+  if (FramePeriodNs == NULL ||
+      !WaitPixelValveVfpStart (Base, &First)) {
+    return FALSE;
+  }
+
+  Last = First;
+  for (Frame = 0; Frame < RPI5_PV_MEASURE_FRAMES; Frame++) {
+    if (!WaitPixelValveVfpStart (Base, &Stamp)) {
+      return FALSE;
+    }
+    Last = Stamp;
+  }
+
+  if (Last <= First) {
+    return FALSE;
+  }
+
+  *FramePeriodNs = (Last - First) / RPI5_PV_MEASURE_FRAMES;
+  return *FramePeriodNs != 0;
+}
+
+STATIC
+BOOLEAN
+ReadPixelValveTiming (
+  IN UINT32 Width,
+  IN UINT32 Height,
+  OUT UINT32 *Display,
+  OUT RASPBERRY_PI_DISPLAY_TIMING *Timing
+  )
+{
+  UINT32 PixelValve;
+  UINT64 Base;
+  RPI5_DISPLAY_PV_DIAG *Diag;
+  UINT32 HSync;
+  UINT32 HBackPorch;
+  UINT32 HActive;
+  UINT32 HFrontPorch;
+  UINT32 VSync;
+  UINT32 VBackPorch;
+  UINT32 VActive;
+  UINT32 VFrontPorch;
+  UINT32 HTotal;
+  UINT32 VTotal;
+  UINT64 FramePeriodNs;
+  UINT64 FramePixels;
+  UINT64 PixelClockHz;
+  UINT64 Refresh;
+
+  if (Display == NULL || Timing == NULL) {
+    return FALSE;
+  }
+
+  CapturePixelValveRegisters (0);
+  CapturePixelValveRegisters (1);
+
+  for (PixelValve = 0; PixelValve < 2; PixelValve++) {
+    Diag = &mRpi5DisplayDiag.PixelValve[PixelValve];
+    Base = Diag->Base;
+
+    if ((Diag->Control & RPI5_PV_CONTROL_EN) == 0 ||
+        (Diag->VControl & RPI5_PV_VCONTROL_VIDEN) == 0 ||
+        (Diag->VControl & RPI5_PV_VCONTROL_INTERLACE) != 0) {
+      continue;
+    }
+
+    HSync = Diag->Horza & 0xFFFFU;
+    HBackPorch = (Diag->Horza >> 16) & 0xFFFFU;
+    HActive = Diag->Horzb & 0xFFFFU;
+    HFrontPorch = (Diag->Horzb >> 16) & 0xFFFFU;
+    VSync = Diag->Verta & 0xFFFFU;
+    VBackPorch = (Diag->Verta >> 16) & 0xFFFFU;
+    VActive = Diag->Vertb & 0xFFFFU;
+    VFrontPorch = (Diag->Vertb >> 16) & 0xFFFFU;
+
+    HTotal = HActive + HFrontPorch + HSync + HBackPorch;
+    VTotal = VActive + VFrontPorch + VSync + VBackPorch;
+
+    if (HActive != Width || VActive != Height ||
+        HSync == 0 || VSync == 0 ||
+        HTotal <= HActive || VTotal <= VActive ||
+        HTotal > MAX_UINT16 || VTotal > MAX_UINT16) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display PixelValve%u geometry rejected control=0x%x vcontrol=0x%x "
+        "h=%u+%u+%u+%u v=%u+%u+%u+%u GOP=%ux%u\n",
+        PixelValve, Diag->Control, Diag->VControl,
+        HActive, HFrontPorch, HSync, HBackPorch,
+        VActive, VFrontPorch, VSync, VBackPorch,
+        Width, Height));
+      continue;
+    }
+
+    if (!MeasurePixelValveFramePeriod (Base, &FramePeriodNs)) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display PixelValve%u VFP measurement timed out\n", PixelValve));
+      continue;
+    }
+
+    FramePixels = (UINT64)HTotal * (UINT64)VTotal;
+    PixelClockHz =
+      (FramePixels * 1000000000ULL + (FramePeriodNs / 2ULL)) / FramePeriodNs;
+    if (PixelClockHz < 1000000ULL || PixelClockHz > 4000000000ULL) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display PixelValve%u measured pixel clock out of range: %LuHz\n",
+        PixelValve, PixelClockHz));
+      continue;
+    }
+
+    ZeroMem (Timing, sizeof (*Timing));
+    *Display = PixelValve == 0 ? 2U : 7U;
+    Timing->Display = (UINT8)*Display;
+    Timing->Clock = (UINT32)((PixelClockHz + 500ULL) / 1000ULL);
+    Timing->HDisplay = (UINT16)HActive;
+    Timing->HSyncStart = (UINT16)(HActive + HFrontPorch);
+    Timing->HSyncEnd = (UINT16)(HActive + HFrontPorch + HSync);
+    Timing->HTotal = (UINT16)HTotal;
+    Timing->VDisplay = (UINT16)VActive;
+    Timing->VSyncStart = (UINT16)(VActive + VFrontPorch);
+    Timing->VSyncEnd = (UINT16)(VActive + VFrontPorch + VSync);
+    Timing->VTotal = (UINT16)VTotal;
+
+    Refresh = (1000000000ULL + (FramePeriodNs / 2ULL)) / FramePeriodNs;
+    if (Refresh <= MAX_UINT16) {
+      Timing->VRefresh = (UINT16)Refresh;
+    }
+
+    if (!ValidateDisplayTiming (Timing, Width, Height)) {
+      continue;
+    }
+
+    mRpi5DisplayDiag.StatusFlags |=
+      RPI5_DISPLAY_DIAG_PV_TIMING_VALID |
+      RPI5_DISPLAY_DIAG_VBLANK_MEASURED;
+    mRpi5DisplayDiag.TimingSource = RPI5_DISPLAY_TIMING_SOURCE_PIXELVALVE;
+    mRpi5DisplayDiag.SelectedPixelValve = PixelValve;
+    mRpi5DisplayDiag.FramePeriodNs = FramePeriodNs;
+    mRpi5DisplayDiag.DerivedClockKHz = Timing->Clock;
+    mRpi5DisplayDiag.ActiveWidth = HActive;
+    mRpi5DisplayDiag.ActiveHeight = VActive;
+    mRpi5DisplayDiag.HTotal = HTotal;
+    mRpi5DisplayDiag.VTotal = VTotal;
+
+    DEBUG ((DEBUG_INFO,
+      "Rpi5Display handoff stage=timing-selected source=pixelvalve pv=%u "
+      "display=%u mode=%ux%u clock=%uKHz totals=%ux%u period=%Luns refresh=%u\n",
+      PixelValve, *Display, Width, Height, Timing->Clock,
+      Timing->HTotal, Timing->VTotal, FramePeriodNs, Timing->VRefresh));
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+STATIC
+EFI_STATUS
+InstallDisplayDiagnosticsAcpi (
+  IN EFI_STATUS LastStatus,
+  IN UINT32 Width,
+  IN UINT32 Height
+  )
+{
+  RPI5_DISPLAY_DIAG_ACPI_TABLE Table;
+  EFI_ACPI_TABLE_PROTOCOL *AcpiTable;
+  EFI_STATUS Status;
+  UINTN TableKey;
+
+  CapturePixelValveRegisters (0);
+  CapturePixelValveRegisters (1);
+  mRpi5DisplayDiag.Version = 1;
+  mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_READY_TO_BOOT;
+  mRpi5DisplayDiag.LastStatus = (UINT64)(UINTN)LastStatus;
+  if (mRpi5DisplayDiag.ActiveWidth == 0) {
+    mRpi5DisplayDiag.ActiveWidth = Width;
+  }
+  if (mRpi5DisplayDiag.ActiveHeight == 0) {
+    mRpi5DisplayDiag.ActiveHeight = Height;
+  }
+
+  ZeroMem (&Table, sizeof (Table));
+  Table.Header.Signature = SIGNATURE_32 ('R', '5', 'D', 'G');
+  Table.Header.Length = sizeof (Table);
+  Table.Header.Revision = RPI5_DISPLAY_DIAG_ACPI_REVISION;
+  CopyMem (Table.Header.OemId, "RPIFW ", sizeof (Table.Header.OemId));
+  CopyMem (&Table.Header.OemTableId, "R5DGDIAG", sizeof (Table.Header.OemTableId));
+  Table.Header.OemRevision = 1;
+  Table.Header.CreatorId = SIGNATURE_32 ('R', 'P', 'I', '5');
+  Table.Header.CreatorRevision = 1;
+  CopyMem (&Table.Diag, &mRpi5DisplayDiag, sizeof (Table.Diag));
+
+  Status = gBS->LocateProtocol (
+                  &gEfiAcpiTableProtocolGuid,
+                  NULL,
+                  (VOID **)&AcpiTable);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display R5DG stage=locate-acpi status=%r\n", Status));
+    return Status;
+  }
+
+  TableKey = 0;
+  Status = AcpiTable->InstallAcpiTable (
+                        AcpiTable,
+                        &Table,
+                        sizeof (Table),
+                        &TableKey);
+  if (!EFI_ERROR (Status)) {
+    mRpi5DisplayDiagTableKey = TableKey;
+  }
+
+  DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
+    "Rpi5Display R5DG stage=install status=%r key=%Lu flags=0x%x source=%u "
+    "selectedPv=%u period=%Luns clock=%uKHz GOP=%ux%u\n",
+    Status, (UINT64)TableKey, mRpi5DisplayDiag.StatusFlags,
+    mRpi5DisplayDiag.TimingSource, mRpi5DisplayDiag.SelectedPixelValve,
+    mRpi5DisplayDiag.FramePeriodNs, mRpi5DisplayDiag.DerivedClockKHz,
+    Width, Height));
+  return Status;
+}
+
+STATIC
 EFI_STATUS
 InstallDisplayHandoffAcpi (
   IN CONST RPI5_DISPLAY_HANDOFF *Handoff
