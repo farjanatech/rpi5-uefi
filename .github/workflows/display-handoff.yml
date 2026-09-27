@@ -10,6 +10,8 @@ on:
     paths:
       - 'build.sh'
       - 'tools/apply-display-handoff.py'
+      - 'tests/edid_timing_fallback_test.py'
+      - 'tests/pixelvalve_timing_test.py'
       - '.github/workflows/display-handoff.yml'
   workflow_dispatch:
 
