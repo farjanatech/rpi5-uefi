@@ -415,6 +415,192 @@ ValidateDisplayTiming (
 }
 
 STATIC
+BOOLEAN
+ParseEdidDetailedTiming (
+  IN CONST UINT8 *Dtd,
+  IN UINT32 Width,
+  IN UINT32 Height,
+  IN UINT32 Display,
+  OUT RASPBERRY_PI_DISPLAY_TIMING *Timing
+  )
+{
+  UINT32 PixelClock10KHz;
+  UINT32 HActive;
+  UINT32 HBlank;
+  UINT32 VActive;
+  UINT32 VBlank;
+  UINT32 HSyncOffset;
+  UINT32 HSyncWidth;
+  UINT32 VSyncOffset;
+  UINT32 VSyncWidth;
+  UINT64 FramePixels;
+  UINT64 Refresh;
+
+  if (Dtd == NULL || Timing == NULL) {
+    return FALSE;
+  }
+
+  PixelClock10KHz = (UINT32)Dtd[0] | ((UINT32)Dtd[1] << 8);
+  if (PixelClock10KHz == 0) {
+    return FALSE;
+  }
+
+  HActive = (UINT32)Dtd[2] | (((UINT32)Dtd[4] & 0xF0U) << 4);
+  HBlank = (UINT32)Dtd[3] | (((UINT32)Dtd[4] & 0x0FU) << 8);
+  VActive = (UINT32)Dtd[5] | (((UINT32)Dtd[7] & 0xF0U) << 4);
+  VBlank = (UINT32)Dtd[6] | (((UINT32)Dtd[7] & 0x0FU) << 8);
+
+  if (HActive != Width || VActive != Height || HBlank == 0 || VBlank == 0) {
+    return FALSE;
+  }
+
+  HSyncOffset = (UINT32)Dtd[8] | (((UINT32)Dtd[11] & 0xC0U) << 2);
+  HSyncWidth = (UINT32)Dtd[9] | (((UINT32)Dtd[11] & 0x30U) << 4);
+  VSyncOffset = ((UINT32)Dtd[10] >> 4) | (((UINT32)Dtd[11] & 0x0CU) << 2);
+  VSyncWidth = ((UINT32)Dtd[10] & 0x0FU) | (((UINT32)Dtd[11] & 0x03U) << 4);
+
+  ZeroMem (Timing, sizeof (*Timing));
+  Timing->Display = (UINT8)Display;
+  Timing->Clock = PixelClock10KHz * 10U;
+  Timing->HDisplay = (UINT16)HActive;
+  Timing->HSyncStart = (UINT16)(HActive + HSyncOffset);
+  Timing->HSyncEnd = (UINT16)(HActive + HSyncOffset + HSyncWidth);
+  Timing->HTotal = (UINT16)(HActive + HBlank);
+  Timing->VDisplay = (UINT16)VActive;
+  Timing->VSyncStart = (UINT16)(VActive + VSyncOffset);
+  Timing->VSyncEnd = (UINT16)(VActive + VSyncOffset + VSyncWidth);
+  Timing->VTotal = (UINT16)(VActive + VBlank);
+
+  if ((Dtd[17] & 0x80U) != 0) {
+    Timing->Flags |= RPI5_DISPLAY_TIMING_FLAG_INTERLACE;
+  }
+
+  /* EDID separate digital sync: bit 1 is H polarity, bit 2 is V polarity. */
+  if ((Dtd[17] & 0x18U) == 0x18U) {
+    if ((Dtd[17] & 0x02U) != 0) {
+      Timing->Flags |= BIT0;
+    }
+    if ((Dtd[17] & 0x04U) != 0) {
+      Timing->Flags |= BIT1;
+    }
+  }
+
+  FramePixels = (UINT64)Timing->HTotal * (UINT64)Timing->VTotal;
+  if (FramePixels != 0) {
+    Refresh = ((UINT64)Timing->Clock * 1000ULL + (FramePixels / 2ULL)) / FramePixels;
+    if (Refresh <= MAX_UINT16) {
+      Timing->VRefresh = (UINT16)Refresh;
+    }
+  }
+
+  return ValidateDisplayTiming (Timing, Width, Height);
+}
+
+STATIC
+BOOLEAN
+FindEdidDetailedTiming (
+  IN CONST UINT8 *Edid,
+  IN UINT32 BlocksRead,
+  IN UINT32 Width,
+  IN UINT32 Height,
+  IN UINT32 Display,
+  OUT RASPBERRY_PI_DISPLAY_TIMING *Timing
+  )
+{
+  UINT32 Descriptor;
+  UINT32 Block;
+  UINT32 Offset;
+  CONST UINT8 *Extension;
+
+  if (Edid == NULL || Timing == NULL || BlocksRead == 0) {
+    return FALSE;
+  }
+
+  /* Base EDID has four 18-byte detailed descriptors starting at byte 54. */
+  for (Descriptor = 0; Descriptor < 4; Descriptor++) {
+    Offset = 54U + (Descriptor * 18U);
+    if (ParseEdidDetailedTiming (&Edid[Offset], Width, Height, Display, Timing)) {
+      return TRUE;
+    }
+  }
+
+  /*
+   * CTA-861 extension detailed timings start at byte 2's DTD offset and end
+   * before the checksum at byte 127. Other extension formats are ignored.
+   */
+  for (Block = 1; Block < BlocksRead; Block++) {
+    Extension = &Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE];
+    if (Extension[0] != 0x02U || Extension[2] < 4U || Extension[2] >= 127U) {
+      continue;
+    }
+
+    for (Offset = Extension[2]; Offset + 18U <= 127U; Offset += 18U) {
+      if (ParseEdidDetailedTiming (&Extension[Offset], Width, Height, Display, Timing)) {
+        return TRUE;
+      }
+    }
+  }
+
+  return FALSE;
+}
+
+STATIC
+EFI_STATUS
+ReadDisplayEdid (
+  IN UINT32 Display,
+  OUT UINT8 Edid[RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RASPBERRY_PI_EDID_BLOCK_SIZE],
+  OUT UINT32 *BlocksRead,
+  OUT BOOLEAN *Complete
+  )
+{
+  EFI_STATUS Status;
+  UINT32 ReadLimit;
+
+  if (Edid == NULL || BlocksRead == NULL || Complete == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  ZeroMem (Edid,
+    RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RASPBERRY_PI_EDID_BLOCK_SIZE);
+  *BlocksRead = 0;
+  *Complete = FALSE;
+
+  Status = mFwProtocol->GetEdidBlockDisplay (Display, 0, &Edid[0]);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  if (!ValidateEdidBlock (&Edid[0], TRUE)) {
+    return EFI_COMPROMISED_DATA;
+  }
+
+  *BlocksRead = 1;
+  WantedBlocks = 1U + Edid[126];
+  ReadLimit = WantedBlocks;
+  if (ReadLimit > RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) {
+    ReadLimit = RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS;
+  }
+
+  for (Block = 1; Block < ReadLimit; Block++) {
+    Status = mFwProtocol->GetEdidBlockDisplay (
+                            Display,
+                            Block,
+                            &Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE]);
+    if (EFI_ERROR (Status) ||
+        !ValidateEdidBlock (&Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE], FALSE)) {
+      return EFI_SUCCESS;
+    }
+    (*BlocksRead)++;
+  }
+
+  if (WantedBlocks <= RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS &&
+      *BlocksRead == WantedBlocks) {
+    *Complete = TRUE;
+  }
+
+  return EFI_SUCCESS;
+}
+
+STATIC
 EFI_STATUS
 PublishDisplayHandoff (
   IN UINT32 Width,
@@ -432,9 +618,11 @@ PublishDisplayHandoff (
   UINT32 DisplayCount;
   UINT32 DisplayIndex;
   UINT32 ProbeCount;
-  UINT32 Block;
-  UINT32 WantedBlocks;
+  UINT32 EdidBlocksRead;
+  BOOLEAN EdidComplete;
   BOOLEAN TimingFound;
+  BOOLEAN TimingFromEdid;
+  UINT8 CandidateEdid[RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RASPBERRY_PI_EDID_BLOCK_SIZE];
 
   ExpectedAttributes = EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS;
 
@@ -471,6 +659,7 @@ PublishDisplayHandoff (
   }
 
   TimingFound = FALSE;
+  TimingFromEdid = FALSE;
   Display = 0;
   ZeroMem (&Timing, sizeof (Timing));
 
@@ -489,31 +678,67 @@ PublishDisplayHandoff (
 
     ZeroMem (&CandidateTiming, sizeof (CandidateTiming));
     Status = mFwProtocol->GetDisplayTiming (CandidateDisplay, &CandidateTiming);
+    if (!EFI_ERROR (Status) &&
+        ValidateDisplayTiming (&CandidateTiming, Width, Height)) {
+      Display = CandidateDisplay;
+      CopyMem (&Timing, &CandidateTiming, sizeof (Timing));
+      TimingFound = TRUE;
+      TimingFromEdid = FALSE;
+      DEBUG ((DEBUG_INFO,
+        "Rpi5Display handoff stage=timing-selected source=firmware index=%u display=%u "
+        "mode=%ux%u clock=%u totals=%ux%u\\n",
+        DisplayIndex, Display, Width, Height, Timing.Clock,
+        Timing.HTotal, Timing.VTotal));
+      break;
+    }
+
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=timing-fallback index=%u display=%u status=%r "
+      "fw=%ux%u clock=%u totals=%ux%u flags=0x%x\\n",
+      DisplayIndex, CandidateDisplay, Status,
+      CandidateTiming.HDisplay, CandidateTiming.VDisplay,
+      CandidateTiming.Clock, CandidateTiming.HTotal,
+      CandidateTiming.VTotal, CandidateTiming.Flags));
+
+    EdidBlocksRead = 0;
+    EdidComplete = FALSE;
+    Status = ReadDisplayEdid (
+               CandidateDisplay,
+               CandidateEdid,
+               &EdidBlocksRead,
+               &EdidComplete);
     if (EFI_ERROR (Status)) {
       DEBUG ((DEBUG_WARN,
-        "Rpi5Display handoff stage=timing-query index=%u display=%u status=%r\\n",
+        "Rpi5Display handoff stage=edid-read index=%u display=%u status=%r\\n",
         DisplayIndex, CandidateDisplay, Status));
       continue;
     }
 
-    if (!ValidateDisplayTiming (&CandidateTiming, Width, Height)) {
+    ZeroMem (&CandidateTiming, sizeof (CandidateTiming));
+    if (!FindEdidDetailedTiming (
+           CandidateEdid,
+           EdidBlocksRead,
+           Width,
+           Height,
+           CandidateDisplay,
+           &CandidateTiming)) {
       DEBUG ((DEBUG_WARN,
-        "Rpi5Display handoff stage=timing-skip index=%u display=%u mode=%ux%u "
-        "fw=%ux%u clock=%u totals=%ux%u flags=0x%x\\n",
+        "Rpi5Display handoff stage=edid-no-matching-dtd index=%u display=%u "
+        "mode=%ux%u blocks=%u complete=%u\\n",
         DisplayIndex, CandidateDisplay, Width, Height,
-        CandidateTiming.HDisplay, CandidateTiming.VDisplay,
-        CandidateTiming.Clock, CandidateTiming.HTotal,
-        CandidateTiming.VTotal, CandidateTiming.Flags));
+        EdidBlocksRead, EdidComplete));
       continue;
     }
 
     Display = CandidateDisplay;
     CopyMem (&Timing, &CandidateTiming, sizeof (Timing));
     TimingFound = TRUE;
+    TimingFromEdid = TRUE;
     DEBUG ((DEBUG_INFO,
-      "Rpi5Display handoff stage=timing-selected index=%u display=%u mode=%ux%u clock=%u totals=%ux%u\\n",
+      "Rpi5Display handoff stage=timing-selected source=edid index=%u display=%u "
+      "mode=%ux%u clock=%u totals=%ux%u refresh=%u\\n",
       DisplayIndex, Display, Width, Height, Timing.Clock,
-      Timing.HTotal, Timing.VTotal));
+      Timing.HTotal, Timing.VTotal, Timing.VRefresh));
     break;
   }
 
@@ -528,35 +753,27 @@ PublishDisplayHandoff (
   CopyMem (&Handoff.Timing, &Timing, sizeof (Timing));
   Handoff.Flags |= RPI5_DISPLAY_HANDOFF_TIMING_VALID;
 
-  Status = mFwProtocol->GetEdidBlockDisplay (Display, 0, &Handoff.Edid[0]);
-  if (!EFI_ERROR (Status) && ValidateEdidBlock (&Handoff.Edid[0], TRUE)) {
-    WantedBlocks = 1U + Handoff.Edid[126];
-    if (WantedBlocks <= RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) {
-      Handoff.EdidBlockCount = 1;
-      for (Block = 1; Block < WantedBlocks; Block++) {
-        Status = mFwProtocol->GetEdidBlockDisplay (
-                                Display,
-                                Block,
-                                &Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE]);
-        if (EFI_ERROR (Status) ||
-            !ValidateEdidBlock (&Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE], FALSE)) {
-          break;
-        }
-        Handoff.EdidBlockCount++;
-      }
-      if (Handoff.EdidBlockCount == WantedBlocks) {
-        Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
-      }
-    }
-  }
-
-  if ((Handoff.Flags & RPI5_DISPLAY_HANDOFF_EDID_VALID) == 0) {
+  EdidBlocksRead = 0;
+  EdidComplete = FALSE;
+  Status = ReadDisplayEdid (
+             Display,
+             Handoff.Edid,
+             &EdidBlocksRead,
+             &EdidComplete);
+  if (!EFI_ERROR (Status) && EdidComplete) {
+    Handoff.EdidBlockCount = EdidBlocksRead;
+    Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
+  } else {
     DEBUG ((DEBUG_WARN,
-      "Rpi5Display handoff stage=edid optional-status=%r display=%u\\n",
-      Status, Display));
+      "Rpi5Display handoff stage=edid-optional status=%r display=%u blocks=%u complete=%u\\n",
+      Status, Display, EdidBlocksRead, EdidComplete));
     Handoff.EdidBlockCount = 0;
     ZeroMem (Handoff.Edid, sizeof (Handoff.Edid));
   }
+
+  DEBUG ((DEBUG_INFO,
+    "Rpi5Display handoff stage=timing-source source=%a display=%u\\n",
+    TimingFromEdid ? "edid" : "firmware", Display));
 
   Status = gST->RuntimeServices->SetVariable (
                   L"Rpi5DisplayHandoff",
