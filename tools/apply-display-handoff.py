@@ -840,7 +840,7 @@ ReadPixelValveTiming (
         HTotal > MAX_UINT16 || VTotal > MAX_UINT16) {
       DEBUG ((DEBUG_WARN,
         "Rpi5Display PixelValve%u geometry rejected control=0x%x vcontrol=0x%x "
-        "h=%u+%u+%u+%u v=%u+%u+%u+%u GOP=%ux%u\n",
+        "h=%u+%u+%u+%u v=%u+%u+%u+%u GOP=%ux%u\\n",
         PixelValve, Diag->Control, Diag->VControl,
         HActive, HFrontPorch, HSync, HBackPorch,
         VActive, VFrontPorch, VSync, VBackPorch,
@@ -850,7 +850,7 @@ ReadPixelValveTiming (
 
     if (!MeasurePixelValveFramePeriod (Base, &FramePeriodNs)) {
       DEBUG ((DEBUG_WARN,
-        "Rpi5Display PixelValve%u VFP measurement timed out\n", PixelValve));
+        "Rpi5Display PixelValve%u VFP measurement timed out\\n", PixelValve));
       continue;
     }
 
@@ -859,7 +859,7 @@ ReadPixelValveTiming (
       (FramePixels * 1000000000ULL + (FramePeriodNs / 2ULL)) / FramePeriodNs;
     if (PixelClockHz < 1000000ULL || PixelClockHz > 4000000000ULL) {
       DEBUG ((DEBUG_WARN,
-        "Rpi5Display PixelValve%u measured pixel clock out of range: %LuHz\n",
+        "Rpi5Display PixelValve%u measured pixel clock out of range: %LuHz\\n",
         PixelValve, PixelClockHz));
       continue;
     }
@@ -900,7 +900,7 @@ ReadPixelValveTiming (
 
     DEBUG ((DEBUG_INFO,
       "Rpi5Display handoff stage=timing-selected source=pixelvalve pv=%u "
-      "display=%u mode=%ux%u clock=%uKHz totals=%ux%u period=%Luns refresh=%u\n",
+      "display=%u mode=%ux%u clock=%uKHz totals=%ux%u period=%Luns refresh=%u\\n",
       PixelValve, *Display, Width, Height, Timing->Clock,
       Timing->HTotal, Timing->VTotal, FramePeriodNs, Timing->VRefresh));
     return TRUE;
@@ -951,7 +951,7 @@ InstallDisplayDiagnosticsAcpi (
                   (VOID **)&AcpiTable);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_WARN,
-      "Rpi5Display R5DG stage=locate-acpi status=%r\n", Status));
+      "Rpi5Display R5DG stage=locate-acpi status=%r\\n", Status));
     return Status;
   }
 
@@ -967,7 +967,7 @@ InstallDisplayDiagnosticsAcpi (
 
   DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
     "Rpi5Display R5DG stage=install status=%r key=%Lu flags=0x%x source=%u "
-    "selectedPv=%u period=%Luns clock=%uKHz GOP=%ux%u\n",
+    "selectedPv=%u period=%Luns clock=%uKHz GOP=%ux%u\\n",
     Status, (UINT64)TableKey, mRpi5DisplayDiag.StatusFlags,
     mRpi5DisplayDiag.TimingSource, mRpi5DisplayDiag.SelectedPixelValve,
     mRpi5DisplayDiag.FramePeriodNs, mRpi5DisplayDiag.DerivedClockKHz,
