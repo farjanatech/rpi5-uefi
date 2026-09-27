@@ -652,7 +652,7 @@ InstallDisplayHandoffAcpi (
                   (VOID **)&AcpiTable);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_WARN,
-      "Rpi5Display ACPI handoff stage=locate-acpi status=%r\n", Status));
+      "Rpi5Display ACPI handoff stage=locate-acpi status=%r\\n", Status));
     return Status;
   }
 
@@ -667,7 +667,7 @@ InstallDisplayHandoffAcpi (
   }
 
   DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
-    "Rpi5Display ACPI handoff stage=install status=%r key=%Lu display=%u flags=0x%x clock=%uKHz totals=%ux%u\n",
+    "Rpi5Display ACPI handoff stage=install status=%r key=%Lu display=%u flags=0x%x clock=%uKHz totals=%ux%u\\n",
     Status, (UINT64)TableKey, Handoff->DisplayNumber, Handoff->Flags,
     Handoff->Timing.Clock, Handoff->Timing.HTotal, Handoff->Timing.VTotal));
   return Status;
@@ -859,7 +859,7 @@ PublishDisplayHandoff (
                   &Handoff);
   if (EFI_ERROR (VariableStatus)) {
     DEBUG ((DEBUG_WARN,
-      "Rpi5Display variable handoff stage=set-variable status=%r display=%u flags=0x%x\n",
+      "Rpi5Display variable handoff stage=set-variable status=%r display=%u flags=0x%x\\n",
       VariableStatus, Display, Handoff.Flags));
   } else {
     ZeroMem (&Verify, sizeof (Verify));
@@ -876,7 +876,7 @@ PublishDisplayHandoff (
         VerifyAttributes != ExpectedAttributes ||
         CompareMem (&Verify, &Handoff, sizeof (Handoff)) != 0) {
       DEBUG ((DEBUG_WARN,
-        "Rpi5Display variable handoff stage=verify status=%r bytes=%u attrs=0x%x expected=0x%x\n",
+        "Rpi5Display variable handoff stage=verify status=%r bytes=%u attrs=0x%x expected=0x%x\\n",
         Status, (UINT32)VerifySize, VerifyAttributes, ExpectedAttributes));
       (VOID)gST->RuntimeServices->SetVariable (
                                     L"Rpi5DisplayHandoff",
@@ -889,7 +889,7 @@ PublishDisplayHandoff (
       VariableStatus = EFI_SUCCESS;
       DEBUG ((DEBUG_INFO,
         "Rpi5Display variable handoff stage=published display=%u flags=0x%x %ux%u "
-        "clock=%uKHz totals=%ux%u refreshHint=%u edidBlocks=%u attrs=0x%x\n",
+        "clock=%uKHz totals=%ux%u refreshHint=%u edidBlocks=%u attrs=0x%x\\n",
         Handoff.DisplayNumber, Handoff.Flags, Width, Height, Handoff.Timing.Clock,
         Handoff.Timing.HTotal, Handoff.Timing.VTotal, Handoff.Timing.VRefresh,
         Handoff.EdidBlockCount, VerifyAttributes));
