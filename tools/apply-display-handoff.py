@@ -440,7 +440,6 @@ typedef struct {
   UINT32 ActiveHeight;
   UINT32 HTotal;
   UINT32 VTotal;
-  UINT32 HorizontalScale;
   RPI5_DISPLAY_PV_DIAG PixelValve[2];
 } RPI5_DISPLAY_DIAG_PAYLOAD;
 
@@ -801,6 +800,7 @@ ReadPixelValveTiming (
   UINT32 VFrontPorch;
   UINT32 HTotal;
   UINT32 VTotal;
+  UINT32 HorizontalScale;
   UINT64 FramePeriodNs;
   UINT64 FramePixels;
   UINT64 PixelClockHz;
