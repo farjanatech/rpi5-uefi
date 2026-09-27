@@ -832,7 +832,6 @@ ReadPixelValveTiming (
   )
 {
   UINT32 PixelValve;
-  UINT64 Base;
   RPI5_DISPLAY_PV_DIAG *Diag;
   UINT32 HSync;
   UINT32 HBackPorch;
@@ -861,7 +860,6 @@ ReadPixelValveTiming (
 
   for (PixelValve = 0; PixelValve < 2; PixelValve++) {
     Diag = &mRpi5DisplayDiag.PixelValve[PixelValve];
-    Base = Diag->Base;
 
     if ((Diag->Control & RPI5_PV_CONTROL_EN) == 0 ||
         (Diag->VControl & RPI5_PV_VCONTROL_VIDEN) == 0 ||
