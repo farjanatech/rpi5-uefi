@@ -127,6 +127,10 @@ jobs:
           grep -Fq 'GetVariable (' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           grep -Fq 'ParseEdidDetailedTiming' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           grep -Fq 'source=edid' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq 'gEfiAcpiTableProtocolGuid' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.inf
+          grep -Fq 'RPI5_DISPLAY_HANDOFF_ACPI_TABLE' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq "SIGNATURE_32 ('R', '5', 'D', 'H')" edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq 'InstallAcpiTable' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           python3 tools/apply-display-handoff.py edk2-platforms --reverse
           for ((i=${#patches[@]}-1; i>=0; i--)); do
             p="${patches[$i]}"; extra=()
