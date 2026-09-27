@@ -66,7 +66,7 @@ jobs:
           while IFS= read -r path; do
             [[ -z "$path" ]] && continue
             case "$path" in
-              build.sh|tools/apply-display-handoff.py|.github/workflows/display-handoff.yml)
+              build.sh|tools/apply-display-handoff.py|tests/edid_timing_fallback_test.py|.github/workflows/display-handoff.yml)
                 ;;
               *) echo "Unexpected exp0.7 change: $path" >&2; exit 1 ;;
             esac
@@ -114,6 +114,7 @@ jobs:
           done
           python3 tools/apply-display-handoff.py edk2-platforms
           python3 tests/display_resource_test.py edk2-platforms | tee DISPLAY_RESOURCE_TESTS.log
+          python3 tests/edid_timing_fallback_test.py | tee EDID_TIMING_FALLBACK_TESTS.log
           grep -Fq 'RPI_MBOX_GET_EDID_BLOCK_DISPLAY' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
           grep -Fq 'RPI_MBOX_GET_DISPLAY_TIMING' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
           grep -Fq 'RPI_MBOX_GET_FB_NUM_DISPLAYS' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
@@ -124,6 +125,8 @@ jobs:
           grep -Fq 'Rpi5DisplayReadyToBoot' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           grep -Fq 'stage=verify' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           grep -Fq 'GetVariable (' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq 'ParseEdidDetailedTiming' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
+          grep -Fq 'source=edid' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           python3 tools/apply-display-handoff.py edk2-platforms --reverse
           for ((i=${#patches[@]}-1; i>=0; i--)); do
             p="${patches[$i]}"; extra=()
