@@ -1058,6 +1058,12 @@ PublishDisplayHandoff (
 
   ExpectedAttributes = EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS;
 
+  ZeroMem (&mRpi5DisplayDiag, sizeof (mRpi5DisplayDiag));
+  mRpi5DisplayDiag.Version = 1;
+  mRpi5DisplayDiag.SelectedPixelValve = MAX_UINT32;
+  mRpi5DisplayDiag.ActiveWidth = Width;
+  mRpi5DisplayDiag.ActiveHeight = Height;
+
   /*
    * Do not delete a previously verified handoff before a replacement is ready.
    * A late GOP SetMode can occur after ReadyToBoot. If its timing query fails,
@@ -1116,6 +1122,13 @@ PublishDisplayHandoff (
       CopyMem (&Timing, &CandidateTiming, sizeof (Timing));
       TimingFound = TRUE;
       TimingFromEdid = FALSE;
+      mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_FW_TIMING_VALID;
+      mRpi5DisplayDiag.TimingSource = RPI5_DISPLAY_TIMING_SOURCE_FIRMWARE;
+      mRpi5DisplayDiag.DerivedClockKHz = Timing.Clock;
+      mRpi5DisplayDiag.ActiveWidth = Timing.HDisplay;
+      mRpi5DisplayDiag.ActiveHeight = Timing.VDisplay;
+      mRpi5DisplayDiag.HTotal = Timing.HTotal;
+      mRpi5DisplayDiag.VTotal = Timing.VTotal;
       DEBUG ((DEBUG_INFO,
         "Rpi5Display handoff stage=timing-selected source=firmware index=%u display=%u "
         "mode=%ux%u clock=%u totals=%ux%u\\n",
@@ -1166,12 +1179,29 @@ PublishDisplayHandoff (
     CopyMem (&Timing, &CandidateTiming, sizeof (Timing));
     TimingFound = TRUE;
     TimingFromEdid = TRUE;
+    mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_EDID_TIMING_VALID;
+    mRpi5DisplayDiag.TimingSource = RPI5_DISPLAY_TIMING_SOURCE_EDID;
+    mRpi5DisplayDiag.DerivedClockKHz = Timing.Clock;
+    mRpi5DisplayDiag.ActiveWidth = Timing.HDisplay;
+    mRpi5DisplayDiag.ActiveHeight = Timing.VDisplay;
+    mRpi5DisplayDiag.HTotal = Timing.HTotal;
+    mRpi5DisplayDiag.VTotal = Timing.VTotal;
     DEBUG ((DEBUG_INFO,
       "Rpi5Display handoff stage=timing-selected source=edid index=%u display=%u "
       "mode=%ux%u clock=%u totals=%ux%u refresh=%u\\n",
       DisplayIndex, Display, Width, Height, Timing.Clock,
       Timing.HTotal, Timing.VTotal, Timing.VRefresh));
     break;
+  }
+
+  if (!TimingFound) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=no-mailbox-or-edid-timing mode=%ux%u probed=%u; trying PixelValve\\n",
+      Width, Height, ProbeCount));
+    if (ReadPixelValveTiming (Width, Height, &Display, &Timing)) {
+      TimingFound = TRUE;
+      TimingFromEdid = FALSE;
+    }
   }
 
   if (!TimingFound) {
@@ -1195,6 +1225,7 @@ PublishDisplayHandoff (
   if (!EFI_ERROR (Status) && EdidComplete) {
     Handoff.EdidBlockCount = EdidBlocksRead;
     Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
+    mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_EDID_COMPLETE;
   } else {
     DEBUG ((DEBUG_WARN,
       "Rpi5Display handoff stage=edid-optional status=%r display=%u blocks=%u complete=%u\\n",
@@ -1204,8 +1235,8 @@ PublishDisplayHandoff (
   }
 
   DEBUG ((DEBUG_INFO,
-    "Rpi5Display handoff stage=timing-source source=%a display=%u\\n",
-    TimingFromEdid ? "edid" : "firmware", Display));
+    "Rpi5Display handoff stage=timing-source source=%u display=%u\\n",
+    mRpi5DisplayDiag.TimingSource, Display));
 
   VariableStatus = gST->RuntimeServices->SetVariable (
                   L"Rpi5DisplayHandoff",
@@ -1243,6 +1274,7 @@ PublishDisplayHandoff (
       VariableStatus = EFI_ERROR (Status) ? Status : EFI_COMPROMISED_DATA;
     } else {
       VariableStatus = EFI_SUCCESS;
+      mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_VARIABLE_PUBLISHED;
       DEBUG ((DEBUG_INFO,
         "Rpi5Display variable handoff stage=published display=%u flags=0x%x %ux%u "
         "clock=%uKHz totals=%ux%u refreshHint=%u edidBlocks=%u attrs=0x%x\\n",
@@ -1255,6 +1287,9 @@ PublishDisplayHandoff (
   AcpiStatus = EFI_NOT_READY;
   if (InstallAcpi) {
     AcpiStatus = InstallDisplayHandoffAcpi (&Handoff);
+    if (!EFI_ERROR (AcpiStatus)) {
+      mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_R5DH_INSTALLED;
+    }
   }
 
   if (!EFI_ERROR (VariableStatus) ||
