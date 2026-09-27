@@ -440,6 +440,7 @@ typedef struct {
   UINT32 ActiveHeight;
   UINT32 HTotal;
   UINT32 VTotal;
+  UINT32 HorizontalScale;
   RPI5_DISPLAY_PV_DIAG PixelValve[2];
 } RPI5_DISPLAY_DIAG_PAYLOAD;
 
@@ -831,6 +832,29 @@ ReadPixelValveTiming (
     VActive = Diag->Vertb & 0xFFFFU;
     VFrontPorch = (Diag->Vertb >> 16) & 0xFFFFU;
 
+    /*
+     * BCM2712 firmware can program the PixelValve horizontal fields in
+     * two-pixel clock units. Infer that packing only from the already-known
+     * GOP width instead of hard-coding a board-wide factor. The physical Pi
+     * diagnostic for 1920x1080 showed raw HACTIVE=960 with all horizontal
+     * porches/sync widths likewise halved, while vertical fields were native.
+     */
+    if (HActive == 0 || Width == 0 || (Width % HActive) != 0) {
+      continue;
+    }
+    HorizontalScale = Width / HActive;
+    if (HorizontalScale == 0 || HorizontalScale > 2) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display PixelValve%u unsupported horizontal scale rawActive=%u GOP=%u scale=%u\\n",
+        PixelValve, HActive, Width, HorizontalScale));
+      continue;
+    }
+
+    HSync *= HorizontalScale;
+    HBackPorch *= HorizontalScale;
+    HActive *= HorizontalScale;
+    HFrontPorch *= HorizontalScale;
+
     HTotal = HActive + HFrontPorch + HSync + HBackPorch;
     VTotal = VActive + VFrontPorch + VSync + VBackPorch;
 
@@ -840,8 +864,8 @@ ReadPixelValveTiming (
         HTotal > MAX_UINT16 || VTotal > MAX_UINT16) {
       DEBUG ((DEBUG_WARN,
         "Rpi5Display PixelValve%u geometry rejected control=0x%x vcontrol=0x%x "
-        "h=%u+%u+%u+%u v=%u+%u+%u+%u GOP=%ux%u\\n",
-        PixelValve, Diag->Control, Diag->VControl,
+        "scale=%u h=%u+%u+%u+%u v=%u+%u+%u+%u GOP=%ux%u\\n",
+        PixelValve, Diag->Control, Diag->VControl, HorizontalScale,
         HActive, HFrontPorch, HSync, HBackPorch,
         VActive, VFrontPorch, VSync, VBackPorch,
         Width, Height));
@@ -900,8 +924,8 @@ ReadPixelValveTiming (
 
     DEBUG ((DEBUG_INFO,
       "Rpi5Display handoff stage=timing-selected source=pixelvalve pv=%u "
-      "display=%u mode=%ux%u clock=%uKHz totals=%ux%u period=%Luns refresh=%u\\n",
-      PixelValve, *Display, Width, Height, Timing->Clock,
+      "display=%u scale=%u mode=%ux%u clock=%uKHz totals=%ux%u period=%Luns refresh=%u\\n",
+      PixelValve, *Display, HorizontalScale, Width, Height, Timing->Clock,
       Timing->HTotal, Timing->VTotal, FramePeriodNs, Timing->VRefresh));
     return TRUE;
   }
