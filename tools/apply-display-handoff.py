@@ -851,51 +851,62 @@ PublishDisplayHandoff (
     "Rpi5Display handoff stage=timing-source source=%a display=%u\\n",
     TimingFromEdid ? "edid" : "firmware", Display));
 
-  Status = gST->RuntimeServices->SetVariable (
+  VariableStatus = gST->RuntimeServices->SetVariable (
                   L"Rpi5DisplayHandoff",
                   &mRpi5DisplayHandoffGuid,
                   ExpectedAttributes,
                   sizeof (Handoff),
                   &Handoff);
-  if (EFI_ERROR (Status)) {
+  if (EFI_ERROR (VariableStatus)) {
     DEBUG ((DEBUG_WARN,
-      "Rpi5Display handoff stage=set-variable status=%r display=%u flags=0x%x\\n",
-      Status, Display, Handoff.Flags));
-    return Status;
+      "Rpi5Display variable handoff stage=set-variable status=%r display=%u flags=0x%x\n",
+      VariableStatus, Display, Handoff.Flags));
+  } else {
+    ZeroMem (&Verify, sizeof (Verify));
+    VerifySize = sizeof (Verify);
+    VerifyAttributes = 0;
+    Status = gST->RuntimeServices->GetVariable (
+                    L"Rpi5DisplayHandoff",
+                    &mRpi5DisplayHandoffGuid,
+                    &VerifyAttributes,
+                    &VerifySize,
+                    &Verify);
+    if (EFI_ERROR (Status) ||
+        VerifySize != sizeof (Verify) ||
+        VerifyAttributes != ExpectedAttributes ||
+        CompareMem (&Verify, &Handoff, sizeof (Handoff)) != 0) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display variable handoff stage=verify status=%r bytes=%u attrs=0x%x expected=0x%x\n",
+        Status, (UINT32)VerifySize, VerifyAttributes, ExpectedAttributes));
+      (VOID)gST->RuntimeServices->SetVariable (
+                                    L"Rpi5DisplayHandoff",
+                                    &mRpi5DisplayHandoffGuid,
+                                    0,
+                                    0,
+                                    NULL);
+      VariableStatus = EFI_ERROR (Status) ? Status : EFI_COMPROMISED_DATA;
+    } else {
+      VariableStatus = EFI_SUCCESS;
+      DEBUG ((DEBUG_INFO,
+        "Rpi5Display variable handoff stage=published display=%u flags=0x%x %ux%u "
+        "clock=%uKHz totals=%ux%u refreshHint=%u edidBlocks=%u attrs=0x%x\n",
+        Handoff.DisplayNumber, Handoff.Flags, Width, Height, Handoff.Timing.Clock,
+        Handoff.Timing.HTotal, Handoff.Timing.VTotal, Handoff.Timing.VRefresh,
+        Handoff.EdidBlockCount, VerifyAttributes));
+    }
   }
 
-  ZeroMem (&Verify, sizeof (Verify));
-  VerifySize = sizeof (Verify);
-  VerifyAttributes = 0;
-  Status = gST->RuntimeServices->GetVariable (
-                  L"Rpi5DisplayHandoff",
-                  &mRpi5DisplayHandoffGuid,
-                  &VerifyAttributes,
-                  &VerifySize,
-                  &Verify);
-  if (EFI_ERROR (Status) ||
-      VerifySize != sizeof (Verify) ||
-      VerifyAttributes != ExpectedAttributes ||
-      CompareMem (&Verify, &Handoff, sizeof (Handoff)) != 0) {
-    DEBUG ((DEBUG_WARN,
-      "Rpi5Display handoff stage=verify status=%r bytes=%u attrs=0x%x expected=0x%x\\n",
-      Status, (UINT32)VerifySize, VerifyAttributes, ExpectedAttributes));
-    (VOID)gST->RuntimeServices->SetVariable (
-                                  L"Rpi5DisplayHandoff",
-                                  &mRpi5DisplayHandoffGuid,
-                                  0,
-                                  0,
-                                  NULL);
-    return EFI_ERROR (Status) ? Status : EFI_COMPROMISED_DATA;
+  AcpiStatus = EFI_NOT_READY;
+  if (InstallAcpi) {
+    AcpiStatus = InstallDisplayHandoffAcpi (&Handoff);
   }
 
-  DEBUG ((DEBUG_INFO,
-    "Rpi5Display handoff stage=published display=%u flags=0x%x %ux%u "
-    "clock=%uKHz totals=%ux%u refreshHint=%u edidBlocks=%u attrs=0x%x\\n",
-    Handoff.DisplayNumber, Handoff.Flags, Width, Height, Handoff.Timing.Clock,
-    Handoff.Timing.HTotal, Handoff.Timing.VTotal, Handoff.Timing.VRefresh,
-    Handoff.EdidBlockCount, VerifyAttributes));
-  return EFI_SUCCESS;
+  if (!EFI_ERROR (VariableStatus) ||
+      (InstallAcpi && !EFI_ERROR (AcpiStatus))) {
+    return EFI_SUCCESS;
+  }
+
+  return InstallAcpi ? AcpiStatus : VariableStatus;
 }
 
 STATIC
@@ -914,7 +925,8 @@ Rpi5DisplayReadyToBoot (
   } else {
     Status = PublishDisplayHandoff (
                gDisplayProto.Mode->Info->HorizontalResolution,
-               gDisplayProto.Mode->Info->VerticalResolution);
+               gDisplayProto.Mode->Info->VerticalResolution,
+               TRUE);
     DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
       "Rpi5Display handoff ReadyToBoot status=%r\\n", Status));
   }
@@ -942,7 +954,7 @@ DisplaySetMode (
         ns.reverse)
     replace_one(disp,
         "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  ClearScreen (This);",
-        "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  (VOID)PublishDisplayHandoff (Mode->Width, Mode->Height);\n\n  ClearScreen (This);",
+        "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  (VOID)PublishDisplayHandoff (Mode->Width, Mode->Height, FALSE);\n\n  ClearScreen (This);",
         ns.reverse)
 
     gop_install = """\
