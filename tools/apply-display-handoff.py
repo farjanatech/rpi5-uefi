@@ -1053,7 +1053,6 @@ PublishDisplayHandoff (
   UINT32 EdidBlocksRead;
   BOOLEAN EdidComplete;
   BOOLEAN TimingFound;
-  BOOLEAN TimingFromEdid;
   UINT8 CandidateEdid[RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RASPBERRY_PI_EDID_BLOCK_SIZE];
 
   ExpectedAttributes = EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS;
@@ -1097,7 +1096,6 @@ PublishDisplayHandoff (
   }
 
   TimingFound = FALSE;
-  TimingFromEdid = FALSE;
   Display = 0;
   ZeroMem (&Timing, sizeof (Timing));
 
@@ -1121,8 +1119,7 @@ PublishDisplayHandoff (
       Display = CandidateDisplay;
       CopyMem (&Timing, &CandidateTiming, sizeof (Timing));
       TimingFound = TRUE;
-      TimingFromEdid = FALSE;
-      mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_FW_TIMING_VALID;
+          mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_FW_TIMING_VALID;
       mRpi5DisplayDiag.TimingSource = RPI5_DISPLAY_TIMING_SOURCE_FIRMWARE;
       mRpi5DisplayDiag.DerivedClockKHz = Timing.Clock;
       mRpi5DisplayDiag.ActiveWidth = Timing.HDisplay;
@@ -1178,7 +1175,6 @@ PublishDisplayHandoff (
     Display = CandidateDisplay;
     CopyMem (&Timing, &CandidateTiming, sizeof (Timing));
     TimingFound = TRUE;
-    TimingFromEdid = TRUE;
     mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_EDID_TIMING_VALID;
     mRpi5DisplayDiag.TimingSource = RPI5_DISPLAY_TIMING_SOURCE_EDID;
     mRpi5DisplayDiag.DerivedClockKHz = Timing.Clock;
@@ -1200,8 +1196,7 @@ PublishDisplayHandoff (
       Width, Height, ProbeCount));
     if (ReadPixelValveTiming (Width, Height, &Display, &Timing)) {
       TimingFound = TRUE;
-      TimingFromEdid = FALSE;
-    }
+        }
   }
 
   if (!TimingFound) {
@@ -1309,18 +1304,32 @@ Rpi5DisplayReadyToBoot (
   )
 {
   EFI_STATUS Status;
+  EFI_STATUS DiagStatus;
+  UINT32 Width;
+  UINT32 Height;
 
   (VOID)Context;
+  Width = 0;
+  Height = 0;
+  Status = EFI_NOT_READY;
+
   if (gDisplayProto.Mode == NULL || gDisplayProto.Mode->Info == NULL) {
     DEBUG ((DEBUG_WARN, "Rpi5Display handoff ReadyToBoot: GOP mode unavailable\\n"));
   } else {
-    Status = PublishDisplayHandoff (
-               gDisplayProto.Mode->Info->HorizontalResolution,
-               gDisplayProto.Mode->Info->VerticalResolution,
-               TRUE);
+    Width = gDisplayProto.Mode->Info->HorizontalResolution;
+    Height = gDisplayProto.Mode->Info->VerticalResolution;
+    Status = PublishDisplayHandoff (Width, Height, TRUE);
     DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
       "Rpi5Display handoff ReadyToBoot status=%r\\n", Status));
   }
+
+  /*
+   * Always publish R5DG even if no timing source produced a valid R5DH.
+   * This makes UEFI->Windows ACPI transport independently observable.
+   */
+  DiagStatus = InstallDisplayDiagnosticsAcpi (Status, Width, Height);
+  DEBUG ((EFI_ERROR (DiagStatus) ? DEBUG_WARN : DEBUG_INFO,
+    "Rpi5Display diagnostics ReadyToBoot status=%r\\n", DiagStatus));
 
   if (Event != NULL) {
     (VOID)gBS->CloseEvent (Event);
