@@ -323,10 +323,16 @@ RpiFirmwareGetEdidBlockDisplay (
         "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetFbNumDisplays);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetFbDisplayId);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetDisplayTiming);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetEdidBlockDisplay);\n",
         ns.reverse)
 
+    display_h = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.h"
+    replace_one(display_h,
+        "#include <Protocol/DevicePath.h>\n#include <Protocol/RpiFirmware.h>\n",
+        "#include <Protocol/DevicePath.h>\n#include <Protocol/AcpiTable.h>\n#include <IndustryStandard/Acpi.h>\n#include <Protocol/RpiFirmware.h>\n",
+        ns.reverse)
+
     display_inf = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.inf"
     replace_one(display_inf,
         "  gEfiCpuArchProtocolGuid\n  gEfiSimpleFileSystemProtocolGuid\n",
-        "  gEfiCpuArchProtocolGuid\n  gEfiVariableArchProtocolGuid\n  gEfiVariableWriteArchProtocolGuid\n  gEfiSimpleFileSystemProtocolGuid\n",
+        "  gEfiCpuArchProtocolGuid\n  gEfiVariableArchProtocolGuid\n  gEfiVariableWriteArchProtocolGuid\n  gEfiAcpiTableProtocolGuid\n  gEfiSimpleFileSystemProtocolGuid\n",
         ns.reverse)
     replace_one(display_inf,
         "  gEfiCpuArchProtocolGuid AND gRaspberryPiFirmwareProtocolGuid\n",
