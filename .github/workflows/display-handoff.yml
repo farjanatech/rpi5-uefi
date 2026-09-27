@@ -116,6 +116,7 @@ jobs:
           python3 tests/display_resource_test.py edk2-platforms | tee DISPLAY_RESOURCE_TESTS.log
           grep -Fq 'RPI_MBOX_GET_EDID_BLOCK_DISPLAY' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
           grep -Fq 'RPI_MBOX_GET_DISPLAY_TIMING' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
+          grep -Fq 'RPI_MBOX_GET_FB_NUM_DISPLAYS' edk2-platforms/Platform/RaspberryPi/Include/IndustryStandard/RpiMbox.h
           grep -Fq 'Rpi5DisplayHandoff' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           grep -Fq 'EFI_VARIABLE_RUNTIME_ACCESS' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
           ! grep -Fq 'EFI_VARIABLE_NON_VOLATILE' edk2-platforms/Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c
