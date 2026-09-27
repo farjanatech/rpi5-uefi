@@ -275,6 +275,16 @@ RpiFirmwareGetEdidBlockDisplay (
         "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetFbDisplayId);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetDisplayTiming);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetEdidBlockDisplay);\n",
         ns.reverse)
 
+    display_inf = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.inf"
+    replace_one(display_inf,
+        "  gEfiCpuArchProtocolGuid\\n  gEfiSimpleFileSystemProtocolGuid\\n",
+        "  gEfiCpuArchProtocolGuid\\n  gEfiVariableWriteArchProtocolGuid\\n  gEfiSimpleFileSystemProtocolGuid\\n",
+        ns.reverse)
+    replace_one(display_inf,
+        "  gEfiCpuArchProtocolGuid AND gRaspberryPiFirmwareProtocolGuid\\n",
+        "  gEfiCpuArchProtocolGuid AND gRaspberryPiFirmwareProtocolGuid AND gEfiVariableWriteArchProtocolGuid\\n",
+        ns.reverse)
+
     disp = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c"
     defs = """\
 #define RPI5_DISPLAY_HANDOFF_SIGNATURE  0x48443552U
@@ -286,6 +296,16 @@ RpiFirmwareGetEdidBlockDisplay (
 
 STATIC EFI_GUID mRpi5DisplayHandoffGuid =
   { 0x941ce3d8, 0x8c4f, 0x4b9e, { 0xa5, 0x77, 0x1c, 0xc9, 0x82, 0x74, 0x55, 0x31 } };
+
+STATIC EFI_EVENT mRpi5DisplayReadyToBootEvent;
+
+STATIC
+VOID
+EFIAPI
+Rpi5DisplayReadyToBoot (
+  IN EFI_EVENT Event,
+  IN VOID *Context
+  );
 
 #pragma pack(1)
 typedef struct {
@@ -327,104 +347,195 @@ ValidateEdidBlock (
 }
 
 STATIC
-VOID
+BOOLEAN
+ValidateDisplayTiming (
+  IN CONST RASPBERRY_PI_DISPLAY_TIMING *Timing,
+  IN UINT32 Width,
+  IN UINT32 Height
+  )
+{
+  return Timing != NULL &&
+         Timing->Clock != 0 && Timing->Clock <= 4000000U &&
+         Timing->HDisplay == Width && Timing->VDisplay == Height &&
+         Timing->HTotal >= Timing->HDisplay && Timing->VTotal >= Timing->VDisplay &&
+         Timing->HSyncStart >= Timing->HDisplay &&
+         Timing->HSyncEnd >= Timing->HSyncStart && Timing->HSyncEnd <= Timing->HTotal &&
+         Timing->VSyncStart >= Timing->VDisplay &&
+         Timing->VSyncEnd >= Timing->VSyncStart && Timing->VSyncEnd <= Timing->VTotal &&
+         (Timing->Flags & RPI5_DISPLAY_TIMING_FLAG_INTERLACE) == 0;
+}
+
+STATIC
+EFI_STATUS
 PublishDisplayHandoff (
   IN UINT32 Width,
   IN UINT32 Height
   )
 {
   RPI5_DISPLAY_HANDOFF Handoff;
+  RPI5_DISPLAY_HANDOFF Verify;
   RASPBERRY_PI_DISPLAY_TIMING Timing;
   EFI_STATUS Status;
+  EFI_STATUS DeleteStatus;
+  UINTN VerifySize;
+  UINT32 VerifyAttributes;
+  UINT32 ExpectedAttributes;
   UINT32 Display;
   UINT32 Block;
   UINT32 WantedBlocks;
 
-  /*
-   * This is a volatile per-boot contract.  Delete the previous value first so
-   * a failed query or SetVariable can never leave same-resolution stale timing
-   * behind for Windows to consume later in the boot.
-   */
-  (VOID)gST->RuntimeServices->SetVariable (L"Rpi5DisplayHandoff", &mRpi5DisplayHandoffGuid, 0, 0, NULL);
+  ExpectedAttributes = EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS;
+
+  DeleteStatus = gST->RuntimeServices->SetVariable (
+                                     L"Rpi5DisplayHandoff",
+                                     &mRpi5DisplayHandoffGuid,
+                                     0,
+                                     0,
+                                     NULL);
+  if (EFI_ERROR (DeleteStatus) && DeleteStatus != EFI_NOT_FOUND) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=delete status=%r\\n", DeleteStatus));
+  }
 
   ZeroMem (&Handoff, sizeof (Handoff));
   Handoff.Signature = RPI5_DISPLAY_HANDOFF_SIGNATURE;
   Handoff.Version = RPI5_DISPLAY_HANDOFF_VERSION;
   Handoff.Size = sizeof (Handoff);
 
-  /*
-   * Legacy framebuffer calls operate on logical framebuffer display index 0.
-   * Translate that index to the firmware/DispmanX display ID first.  Do not
-   * guess 0/1 from geometry: current firmware IDs include HDMI0=2 and HDMI1=7.
-   */
   Display = 0;
   Status = mFwProtocol->GetFbDisplayId (0, &Display);
-  if (!EFI_ERROR (Status) && Display <= 0xFFU) {
-    ZeroMem (&Timing, sizeof (Timing));
-    Status = mFwProtocol->GetDisplayTiming (Display, &Timing);
-    if (!EFI_ERROR (Status) && Timing.Clock != 0 && Timing.Clock <= 4000000U &&
-        Timing.HDisplay == Width && Timing.VDisplay == Height &&
-        Timing.HTotal >= Timing.HDisplay && Timing.VTotal >= Timing.VDisplay &&
-        Timing.HSyncStart >= Timing.HDisplay &&
-        Timing.HSyncEnd >= Timing.HSyncStart && Timing.HSyncEnd <= Timing.HTotal &&
-        Timing.VSyncStart >= Timing.VDisplay &&
-        Timing.VSyncEnd >= Timing.VSyncStart && Timing.VSyncEnd <= Timing.VTotal &&
-        (Timing.Flags & RPI5_DISPLAY_TIMING_FLAG_INTERLACE) == 0) {
-      Handoff.DisplayNumber = Display;
-      CopyMem (&Handoff.Timing, &Timing, sizeof (Timing));
-      Handoff.Flags |= RPI5_DISPLAY_HANDOFF_TIMING_VALID;
-    }
+  if (EFI_ERROR (Status) || Display > 0xFFU) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=display-id status=%r display=%u\\n",
+      Status, Display));
+    return EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR;
   }
 
-  if ((Handoff.Flags & RPI5_DISPLAY_HANDOFF_TIMING_VALID) != 0) {
-    Status = mFwProtocol->GetEdidBlockDisplay (Handoff.DisplayNumber, 0, &Handoff.Edid[0]);
-    if (!EFI_ERROR (Status) && ValidateEdidBlock (&Handoff.Edid[0], TRUE)) {
-      WantedBlocks = 1U + Handoff.Edid[126];
+  ZeroMem (&Timing, sizeof (Timing));
+  Status = mFwProtocol->GetDisplayTiming (Display, &Timing);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=timing-query status=%r display=%u\\n",
+      Status, Display));
+    return Status;
+  }
 
-      /*
-       * Publish EDID only if the complete monitor-declared block chain fits the
-       * version-1 contract and every block was read with a valid checksum.
-       * Timing remains usable on its own if a large/corrupt EDID is rejected.
-       */
-      if (WantedBlocks <= RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) {
-        Handoff.EdidBlockCount = 1;
-        for (Block = 1; Block < WantedBlocks; Block++) {
-          Status = mFwProtocol->GetEdidBlockDisplay (
-                                  Handoff.DisplayNumber,
-                                  Block,
-                                  &Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE]);
-          if (EFI_ERROR (Status) ||
-              !ValidateEdidBlock (&Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE], FALSE)) {
-            break;
-          }
-          Handoff.EdidBlockCount++;
+  if (!ValidateDisplayTiming (&Timing, Width, Height)) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=timing-validate display=%u mode=%ux%u "
+      "fw=%ux%u clock=%u hsync=%u/%u/%u vsync=%u/%u/%u flags=0x%x\\n",
+      Display, Width, Height, Timing.HDisplay, Timing.VDisplay, Timing.Clock,
+      Timing.HSyncStart, Timing.HSyncEnd, Timing.HTotal,
+      Timing.VSyncStart, Timing.VSyncEnd, Timing.VTotal, Timing.Flags));
+    return EFI_COMPROMISED_DATA;
+  }
+
+  Handoff.DisplayNumber = Display;
+  CopyMem (&Handoff.Timing, &Timing, sizeof (Timing));
+  Handoff.Flags |= RPI5_DISPLAY_HANDOFF_TIMING_VALID;
+
+  Status = mFwProtocol->GetEdidBlockDisplay (Display, 0, &Handoff.Edid[0]);
+  if (!EFI_ERROR (Status) && ValidateEdidBlock (&Handoff.Edid[0], TRUE)) {
+    WantedBlocks = 1U + Handoff.Edid[126];
+    if (WantedBlocks <= RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) {
+      Handoff.EdidBlockCount = 1;
+      for (Block = 1; Block < WantedBlocks; Block++) {
+        Status = mFwProtocol->GetEdidBlockDisplay (
+                                Display,
+                                Block,
+                                &Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE]);
+        if (EFI_ERROR (Status) ||
+            !ValidateEdidBlock (&Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE], FALSE)) {
+          break;
         }
-        if (Handoff.EdidBlockCount == WantedBlocks) {
-          Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
-        }
+        Handoff.EdidBlockCount++;
+      }
+      if (Handoff.EdidBlockCount == WantedBlocks) {
+        Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
       }
     }
-
-    if ((Handoff.Flags & RPI5_DISPLAY_HANDOFF_EDID_VALID) == 0) {
-      Handoff.EdidBlockCount = 0;
-      ZeroMem (Handoff.Edid, sizeof (Handoff.Edid));
-    }
   }
 
-  if (Handoff.Flags == 0) {
-    return;
+  if ((Handoff.Flags & RPI5_DISPLAY_HANDOFF_EDID_VALID) == 0) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=edid optional-status=%r display=%u\\n",
+      Status, Display));
+    Handoff.EdidBlockCount = 0;
+    ZeroMem (Handoff.Edid, sizeof (Handoff.Edid));
   }
 
   Status = gST->RuntimeServices->SetVariable (
                   L"Rpi5DisplayHandoff",
                   &mRpi5DisplayHandoffGuid,
-                  EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+                  ExpectedAttributes,
                   sizeof (Handoff),
                   &Handoff);
-  DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
-    "Rpi5Display handoff: display=%u flags=0x%x %ux%u clock=%uKHz edidBlocks=%u status=%r\\n",
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=set-variable status=%r display=%u flags=0x%x\\n",
+      Status, Display, Handoff.Flags));
+    return Status;
+  }
+
+  ZeroMem (&Verify, sizeof (Verify));
+  VerifySize = sizeof (Verify);
+  VerifyAttributes = 0;
+  Status = gST->RuntimeServices->GetVariable (
+                  L"Rpi5DisplayHandoff",
+                  &mRpi5DisplayHandoffGuid,
+                  &VerifyAttributes,
+                  &VerifySize,
+                  &Verify);
+  if (EFI_ERROR (Status) ||
+      VerifySize != sizeof (Verify) ||
+      VerifyAttributes != ExpectedAttributes ||
+      CompareMem (&Verify, &Handoff, sizeof (Handoff)) != 0) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=verify status=%r bytes=%u attrs=0x%x expected=0x%x\\n",
+      Status, (UINT32)VerifySize, VerifyAttributes, ExpectedAttributes));
+    (VOID)gST->RuntimeServices->SetVariable (
+                                  L"Rpi5DisplayHandoff",
+                                  &mRpi5DisplayHandoffGuid,
+                                  0,
+                                  0,
+                                  NULL);
+    return EFI_ERROR (Status) ? Status : EFI_COMPROMISED_DATA;
+  }
+
+  DEBUG ((DEBUG_INFO,
+    "Rpi5Display handoff stage=published display=%u flags=0x%x %ux%u "
+    "clock=%uKHz totals=%ux%u refreshHint=%u edidBlocks=%u attrs=0x%x\\n",
     Handoff.DisplayNumber, Handoff.Flags, Width, Height, Handoff.Timing.Clock,
-    Handoff.EdidBlockCount, Status));
+    Handoff.Timing.HTotal, Handoff.Timing.VTotal, Handoff.Timing.VRefresh,
+    Handoff.EdidBlockCount, VerifyAttributes));
+  return EFI_SUCCESS;
+}
+
+STATIC
+VOID
+EFIAPI
+Rpi5DisplayReadyToBoot (
+  IN EFI_EVENT Event,
+  IN VOID *Context
+  )
+{
+  EFI_STATUS Status;
+
+  (VOID)Context;
+  if (gDisplayProto.Mode == NULL || gDisplayProto.Mode->Info == NULL) {
+    DEBUG ((DEBUG_WARN, "Rpi5Display handoff ReadyToBoot: GOP mode unavailable\\n"));
+  } else {
+    Status = PublishDisplayHandoff (
+               gDisplayProto.Mode->Info->HorizontalResolution,
+               gDisplayProto.Mode->Info->VerticalResolution);
+    DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
+      "Rpi5Display handoff ReadyToBoot status=%r\\n", Status));
+  }
+
+  if (Event != NULL) {
+    (VOID)gBS->CloseEvent (Event);
+  }
+  mRpi5DisplayReadyToBootEvent = NULL;
 }
 
 """
@@ -444,8 +555,36 @@ DisplaySetMode (
         ns.reverse)
     replace_one(disp,
         "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  ClearScreen (This);",
-        "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  PublishDisplayHandoff (Mode->Width, Mode->Height);\n\n  ClearScreen (This);",
+        "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  (VOID)PublishDisplayHandoff (Mode->Width, Mode->Height);\n\n  ClearScreen (This);",
         ns.reverse)
+
+    gop_install = """\
+  Status = gBS->InstallMultipleProtocolInterfaces (
+    &Controller, &gEfiGraphicsOutputProtocolGuid,
+    &gDisplayProto, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Done;
+  }
+
+"""
+    gop_install_ready = gop_install + """\
+  if (mRpi5DisplayReadyToBootEvent == NULL) {
+    EFI_STATUS EventStatus;
+    EventStatus = EfiCreateEventReadyToBootEx (
+                    TPL_CALLBACK,
+                    Rpi5DisplayReadyToBoot,
+                    NULL,
+                    &mRpi5DisplayReadyToBootEvent);
+    if (EFI_ERROR (EventStatus)) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display handoff: ReadyToBoot event creation failed: %r\\n",
+        EventStatus));
+      mRpi5DisplayReadyToBootEvent = NULL;
+    }
+  }
+
+"""
+    replace_one(disp, gop_install, gop_install_ready, ns.reverse)
 
 if __name__ == "__main__":
     main()
