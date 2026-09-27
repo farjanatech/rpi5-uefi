@@ -375,6 +375,17 @@ typedef struct {
 } RPI5_DISPLAY_HANDOFF;
 #pragma pack()
 
+#define RPI5_DISPLAY_ACPI_REVISION  1
+
+#pragma pack(1)
+typedef struct {
+  EFI_ACPI_DESCRIPTION_HEADER Header;
+  RPI5_DISPLAY_HANDOFF        Handoff;
+} RPI5_DISPLAY_HANDOFF_ACPI_TABLE;
+#pragma pack()
+
+STATIC UINTN mRpi5DisplayAcpiTableKey;
+
 """
     replace_one(disp,
         "} GOP_MODE_DATA;\n\n",
@@ -610,15 +621,72 @@ ReadDisplayEdid (
 
 STATIC
 EFI_STATUS
+InstallDisplayHandoffAcpi (
+  IN CONST RPI5_DISPLAY_HANDOFF *Handoff
+  )
+{
+  RPI5_DISPLAY_HANDOFF_ACPI_TABLE Table;
+  EFI_ACPI_TABLE_PROTOCOL *AcpiTable;
+  EFI_STATUS Status;
+  UINTN TableKey;
+
+  if (Handoff == NULL ||
+      (Handoff->Flags & RPI5_DISPLAY_HANDOFF_TIMING_VALID) == 0) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  ZeroMem (&Table, sizeof (Table));
+  Table.Header.Signature = SIGNATURE_32 ('R', '5', 'D', 'H');
+  Table.Header.Length = sizeof (Table);
+  Table.Header.Revision = RPI5_DISPLAY_ACPI_REVISION;
+  CopyMem (Table.Header.OemId, "RPIFW ", sizeof (Table.Header.OemId));
+  CopyMem (&Table.Header.OemTableId, "R5DHHAND", sizeof (Table.Header.OemTableId));
+  Table.Header.OemRevision = 1;
+  Table.Header.CreatorId = SIGNATURE_32 ('R', 'P', 'I', '5');
+  Table.Header.CreatorRevision = 1;
+  CopyMem (&Table.Handoff, Handoff, sizeof (Table.Handoff));
+
+  Status = gBS->LocateProtocol (
+                  &gEfiAcpiTableProtocolGuid,
+                  NULL,
+                  (VOID **)&AcpiTable);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display ACPI handoff stage=locate-acpi status=%r\n", Status));
+    return Status;
+  }
+
+  TableKey = 0;
+  Status = AcpiTable->InstallAcpiTable (
+                        AcpiTable,
+                        &Table,
+                        sizeof (Table),
+                        &TableKey);
+  if (!EFI_ERROR (Status)) {
+    mRpi5DisplayAcpiTableKey = TableKey;
+  }
+
+  DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
+    "Rpi5Display ACPI handoff stage=install status=%r key=%Lu display=%u flags=0x%x clock=%uKHz totals=%ux%u\n",
+    Status, (UINT64)TableKey, Handoff->DisplayNumber, Handoff->Flags,
+    Handoff->Timing.Clock, Handoff->Timing.HTotal, Handoff->Timing.VTotal));
+  return Status;
+}
+
+STATIC
+EFI_STATUS
 PublishDisplayHandoff (
   IN UINT32 Width,
-  IN UINT32 Height
+  IN UINT32 Height,
+  IN BOOLEAN InstallAcpi
   )
 {
   RPI5_DISPLAY_HANDOFF Handoff;
   RPI5_DISPLAY_HANDOFF Verify;
   RASPBERRY_PI_DISPLAY_TIMING Timing;
   EFI_STATUS Status;
+  EFI_STATUS VariableStatus;
+  EFI_STATUS AcpiStatus;
   UINTN VerifySize;
   UINT32 VerifyAttributes;
   UINT32 ExpectedAttributes;
