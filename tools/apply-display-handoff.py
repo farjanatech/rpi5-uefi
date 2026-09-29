@@ -34,7 +34,7 @@ def main() -> None:
         ns.reverse)
     replace_one(mbox,
         "#define RPI_MBOX_GET_FB_GPIOVIRTBUF                           0x00040010\n",
-        "#define RPI_MBOX_GET_FB_GPIOVIRTBUF                           0x00040010\n#define RPI_MBOX_GET_FB_DISPLAY_ID                            0x00040016\n#define RPI_MBOX_GET_DISPLAY_TIMING                           0x00040017\n",
+        "#define RPI_MBOX_GET_FB_GPIOVIRTBUF                           0x00040010\n#define RPI_MBOX_GET_FB_NUM_DISPLAYS                         0x00040013\n#define RPI_MBOX_GET_FB_DISPLAY_ID                            0x00040016\n#define RPI_MBOX_GET_DISPLAY_TIMING                           0x00040017\n",
         ns.reverse)
 
     proto = r / "Platform/RaspberryPi/Include/Protocol/RpiFirmware.h"
@@ -73,6 +73,12 @@ typedef struct {
     api = """\
 typedef
 EFI_STATUS
+(EFIAPI *GET_FB_NUM_DISPLAYS) (
+  OUT UINT32  *DisplayCount
+  );
+
+typedef
+EFI_STATUS
 (EFIAPI *GET_FB_DISPLAY_ID) (
   IN  UINT32  DisplayIndex,
   OUT UINT32  *DisplayId
@@ -98,7 +104,7 @@ EFI_STATUS
         api + "typedef struct {\n  SET_POWER_STATE", ns.reverse)
     replace_one(proto,
         "  GET_TEMPERATURE        GetTemperature;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
-        "  GET_TEMPERATURE        GetTemperature;\n  GET_FB_DISPLAY_ID      GetFbDisplayId;\n  GET_DISPLAY_TIMING     GetDisplayTiming;\n  GET_EDID_BLOCK_DISPLAY GetEdidBlockDisplay;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
+        "  GET_TEMPERATURE        GetTemperature;\n  GET_FB_NUM_DISPLAYS    GetFbNumDisplays;\n  GET_FB_DISPLAY_ID      GetFbDisplayId;\n  GET_DISPLAY_TIMING     GetDisplayTiming;\n  GET_EDID_BLOCK_DISPLAY GetEdidBlockDisplay;\n} RASPBERRY_PI_FIRMWARE_PROTOCOL;",
         ns.reverse)
 
     fw = r / "Platform/RaspberryPi/Drivers/RpiFirmwareDxe/RpiFirmwareDxe.c"
@@ -110,6 +116,8 @@ typedef struct {
   UINT32              TagBody;
   UINT32              EndTag;
 } RPI_FW_GET_FB_DISPLAY_ID_CMD;
+
+typedef RPI_FW_GET_FB_DISPLAY_ID_CMD RPI_FW_GET_FB_NUM_DISPLAYS_CMD;
 
 typedef struct {
   RPI_FW_BUFFER_HEAD            BufferHead;
@@ -138,6 +146,46 @@ typedef struct {
         structs + "STATIC UINTN mMboxBaseAddress;",
         ns.reverse)
     funcs = """\
+STATIC
+EFI_STATUS
+EFIAPI
+RpiFirmwareGetFbNumDisplays (
+  OUT UINT32  *DisplayCount
+  )
+{
+  RPI_FW_GET_FB_NUM_DISPLAYS_CMD *Cmd;
+  EFI_STATUS                     Status;
+  UINT32                         Result;
+
+  if (DisplayCount == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+  if (!AcquireSpinLockOrFail (&mMailboxLock)) {
+    return EFI_DEVICE_ERROR;
+  }
+
+  Cmd = mDmaBuffer;
+  ZeroMem (Cmd, sizeof (*Cmd));
+  Cmd->BufferHead.BufferSize = sizeof (*Cmd);
+  Cmd->TagHead.TagId = RPI_MBOX_GET_FB_NUM_DISPLAYS;
+  Cmd->TagHead.TagSize = sizeof (Cmd->TagBody);
+  Cmd->TagBody = 0;
+  Cmd->EndTag = 0;
+
+  Status = MailboxTransaction (Cmd->BufferHead.BufferSize, RPI_MBOX_VC_CHANNEL, &Result);
+  if (EFI_ERROR (Status) ||
+      Cmd->BufferHead.Response != RPI_MBOX_RESP_SUCCESS ||
+      (Cmd->TagHead.TagValueSize & RPI_MBOX_VALUE_SIZE_RESPONSE_MASK) == 0 ||
+      (Cmd->TagHead.TagValueSize & ~RPI_MBOX_VALUE_SIZE_RESPONSE_MASK) < sizeof (Cmd->TagBody) ||
+      Cmd->TagBody == 0) {
+    Status = EFI_NOT_FOUND;
+  } else {
+    *DisplayCount = Cmd->TagBody;
+  }
+  ReleaseSpinLock (&mMailboxLock);
+  return Status;
+}
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -268,11 +316,27 @@ RpiFirmwareGetEdidBlockDisplay (
         ns.reverse)
     replace_one(fw,
         "  RpiFirmwareGetTemperature,\n};",
-        "  RpiFirmwareGetTemperature,\n  RpiFirmwareGetFbDisplayId,\n  RpiFirmwareGetDisplayTiming,\n  RpiFirmwareGetEdidBlockDisplay,\n};",
+        "  RpiFirmwareGetTemperature,\n  RpiFirmwareGetFbNumDisplays,\n  RpiFirmwareGetFbDisplayId,\n  RpiFirmwareGetDisplayTiming,\n  RpiFirmwareGetEdidBlockDisplay,\n};",
         ns.reverse)
     replace_one(fw,
         "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n",
-        "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetFbDisplayId);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetDisplayTiming);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetEdidBlockDisplay);\n",
+        "  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetTemperature);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetFbNumDisplays);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetFbDisplayId);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetDisplayTiming);\n  EfiConvertPointer (0x0, (VOID **)&mRpiFirmwareProtocol.GetEdidBlockDisplay);\n",
+        ns.reverse)
+
+    display_h = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.h"
+    replace_one(display_h,
+        "#include <Protocol/DevicePath.h>\n#include <Protocol/RpiFirmware.h>\n",
+        "#include <Protocol/DevicePath.h>\n#include <Protocol/AcpiTable.h>\n#include <IndustryStandard/Acpi.h>\n#include <Protocol/RpiFirmware.h>\n",
+        ns.reverse)
+
+    display_inf = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.inf"
+    replace_one(display_inf,
+        "  gEfiCpuArchProtocolGuid\n  gEfiSimpleFileSystemProtocolGuid\n",
+        "  gEfiCpuArchProtocolGuid\n  gEfiVariableArchProtocolGuid\n  gEfiVariableWriteArchProtocolGuid\n  gEfiAcpiTableProtocolGuid\n  gEfiSimpleFileSystemProtocolGuid\n",
+        ns.reverse)
+    replace_one(display_inf,
+        "  gEfiCpuArchProtocolGuid AND gRaspberryPiFirmwareProtocolGuid\n",
+        "  gEfiCpuArchProtocolGuid AND gRaspberryPiFirmwareProtocolGuid AND gEfiVariableArchProtocolGuid AND gEfiVariableWriteArchProtocolGuid\n",
         ns.reverse)
 
     disp = r / "Platform/RaspberryPi/Drivers/DisplayDxe/DisplayDxe.c"
@@ -280,12 +344,23 @@ RpiFirmwareGetEdidBlockDisplay (
 #define RPI5_DISPLAY_HANDOFF_SIGNATURE  0x48443552U
 #define RPI5_DISPLAY_HANDOFF_VERSION    1
 #define RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS  4
+#define RPI5_DISPLAY_HANDOFF_MAX_PROBE_DISPLAYS  4
 #define RPI5_DISPLAY_HANDOFF_TIMING_VALID  BIT0
 #define RPI5_DISPLAY_HANDOFF_EDID_VALID    BIT1
 #define RPI5_DISPLAY_TIMING_FLAG_INTERLACE  BIT2
 
 STATIC EFI_GUID mRpi5DisplayHandoffGuid =
   { 0x941ce3d8, 0x8c4f, 0x4b9e, { 0xa5, 0x77, 0x1c, 0xc9, 0x82, 0x74, 0x55, 0x31 } };
+
+STATIC EFI_EVENT mRpi5DisplayReadyToBootEvent;
+
+STATIC
+VOID
+EFIAPI
+Rpi5DisplayReadyToBoot (
+  IN EFI_EVENT Event,
+  IN VOID *Context
+  );
 
 #pragma pack(1)
 typedef struct {
@@ -299,6 +374,92 @@ typedef struct {
   UINT8                        Edid[RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RASPBERRY_PI_EDID_BLOCK_SIZE];
 } RPI5_DISPLAY_HANDOFF;
 #pragma pack()
+
+#define RPI5_DISPLAY_ACPI_REVISION  1
+#define RPI5_DISPLAY_DIAG_ACPI_REVISION  1
+
+#define RPI5_DISPLAY_TIMING_SOURCE_NONE        0U
+#define RPI5_DISPLAY_TIMING_SOURCE_FIRMWARE    1U
+#define RPI5_DISPLAY_TIMING_SOURCE_EDID        2U
+#define RPI5_DISPLAY_TIMING_SOURCE_PIXELVALVE  3U
+
+#define RPI5_DISPLAY_DIAG_READY_TO_BOOT        BIT0
+#define RPI5_DISPLAY_DIAG_PV0_SCANNING         BIT1
+#define RPI5_DISPLAY_DIAG_PV1_SCANNING         BIT2
+#define RPI5_DISPLAY_DIAG_FW_TIMING_VALID      BIT3
+#define RPI5_DISPLAY_DIAG_EDID_TIMING_VALID    BIT4
+#define RPI5_DISPLAY_DIAG_PV_TIMING_VALID      BIT5
+#define RPI5_DISPLAY_DIAG_VBLANK_MEASURED      BIT6
+#define RPI5_DISPLAY_DIAG_R5DH_INSTALLED       BIT7
+#define RPI5_DISPLAY_DIAG_VARIABLE_PUBLISHED   BIT8
+#define RPI5_DISPLAY_DIAG_EDID_COMPLETE        BIT9
+
+#define RPI5_PV0_BASE  0x107C410000ULL
+#define RPI5_PV1_BASE  0x107C411000ULL
+#define RPI5_PV_CONTROL     0x00U
+#define RPI5_PV_V_CONTROL   0x04U
+#define RPI5_PV_HORZA       0x0CU
+#define RPI5_PV_HORZB       0x10U
+#define RPI5_PV_VERTA       0x14U
+#define RPI5_PV_VERTB       0x18U
+#define RPI5_PV_INTSTAT     0x28U
+#define RPI5_PV_CONTROL_EN       BIT0
+#define RPI5_PV_VCONTROL_VIDEN   BIT0
+#define RPI5_PV_VCONTROL_INTERLACE BIT4
+
+/*
+ * BCM2712 exposes both HDMI frame counters in the shared "hd" register block.
+ * Raspberry Pi Linux maps HDMI0 FRAME_COUNT at +0x60 and HDMI1 at +0x64.
+ * The AXI peripheral window is CPU-visible at 0x10_7c72_0000 on Pi 5.
+ */
+#define RPI5_HDMI_HD_BASE             0x107C720000ULL
+#define RPI5_HDMI0_FRAME_COUNT        0x60U
+#define RPI5_HDMI1_FRAME_COUNT        0x64U
+#define RPI5_HDMI_MEASURE_FRAMES      4U
+#define RPI5_HDMI_COUNTER_WAIT_LOOPS  50000U
+#define RPI5_HDMI_COUNTER_WAIT_US     10U
+
+#pragma pack(1)
+typedef struct {
+  EFI_ACPI_DESCRIPTION_HEADER Header;
+  RPI5_DISPLAY_HANDOFF        Handoff;
+} RPI5_DISPLAY_HANDOFF_ACPI_TABLE;
+
+typedef struct {
+  UINT64 Base;
+  UINT32 Control;
+  UINT32 VControl;
+  UINT32 Horza;
+  UINT32 Horzb;
+  UINT32 Verta;
+  UINT32 Vertb;
+  UINT32 Intstat;
+} RPI5_DISPLAY_PV_DIAG;
+
+typedef struct {
+  UINT32 Version;
+  UINT32 StatusFlags;
+  UINT32 TimingSource;
+  UINT32 SelectedPixelValve;
+  UINT64 LastStatus;
+  UINT64 FramePeriodNs;
+  UINT32 DerivedClockKHz;
+  UINT32 ActiveWidth;
+  UINT32 ActiveHeight;
+  UINT32 HTotal;
+  UINT32 VTotal;
+  RPI5_DISPLAY_PV_DIAG PixelValve[2];
+} RPI5_DISPLAY_DIAG_PAYLOAD;
+
+typedef struct {
+  EFI_ACPI_DESCRIPTION_HEADER Header;
+  RPI5_DISPLAY_DIAG_PAYLOAD   Diag;
+} RPI5_DISPLAY_DIAG_ACPI_TABLE;
+#pragma pack()
+
+STATIC UINTN mRpi5DisplayAcpiTableKey;
+STATIC UINTN mRpi5DisplayDiagTableKey;
+STATIC RPI5_DISPLAY_DIAG_PAYLOAD mRpi5DisplayDiag;
 
 """
     replace_one(disp,
@@ -327,104 +488,930 @@ ValidateEdidBlock (
 }
 
 STATIC
-VOID
-PublishDisplayHandoff (
+BOOLEAN
+ValidateDisplayTiming (
+  IN CONST RASPBERRY_PI_DISPLAY_TIMING *Timing,
   IN UINT32 Width,
   IN UINT32 Height
   )
 {
-  RPI5_DISPLAY_HANDOFF Handoff;
-  RASPBERRY_PI_DISPLAY_TIMING Timing;
-  EFI_STATUS Status;
-  UINT32 Display;
+  return Timing != NULL &&
+         Timing->Clock != 0 && Timing->Clock <= 4000000U &&
+         Timing->HDisplay == Width && Timing->VDisplay == Height &&
+         Timing->HTotal >= Timing->HDisplay && Timing->VTotal >= Timing->VDisplay &&
+         Timing->HSyncStart >= Timing->HDisplay &&
+         Timing->HSyncEnd >= Timing->HSyncStart && Timing->HSyncEnd <= Timing->HTotal &&
+         Timing->VSyncStart >= Timing->VDisplay &&
+         Timing->VSyncEnd >= Timing->VSyncStart && Timing->VSyncEnd <= Timing->VTotal &&
+         (Timing->Flags & RPI5_DISPLAY_TIMING_FLAG_INTERLACE) == 0;
+}
+
+STATIC
+BOOLEAN
+ParseEdidDetailedTiming (
+  IN CONST UINT8 *Dtd,
+  IN UINT32 Width,
+  IN UINT32 Height,
+  IN UINT32 Display,
+  OUT RASPBERRY_PI_DISPLAY_TIMING *Timing
+  )
+{
+  UINT32 PixelClock10KHz;
+  UINT32 HActive;
+  UINT32 HBlank;
+  UINT32 VActive;
+  UINT32 VBlank;
+  UINT32 HSyncOffset;
+  UINT32 HSyncWidth;
+  UINT32 VSyncOffset;
+  UINT32 VSyncWidth;
+  UINT64 FramePixels;
+  UINT64 Refresh;
+
+  if (Dtd == NULL || Timing == NULL) {
+    return FALSE;
+  }
+
+  PixelClock10KHz = (UINT32)Dtd[0] | ((UINT32)Dtd[1] << 8);
+  if (PixelClock10KHz == 0) {
+    return FALSE;
+  }
+
+  HActive = (UINT32)Dtd[2] | (((UINT32)Dtd[4] & 0xF0U) << 4);
+  HBlank = (UINT32)Dtd[3] | (((UINT32)Dtd[4] & 0x0FU) << 8);
+  VActive = (UINT32)Dtd[5] | (((UINT32)Dtd[7] & 0xF0U) << 4);
+  VBlank = (UINT32)Dtd[6] | (((UINT32)Dtd[7] & 0x0FU) << 8);
+
+  if (HActive != Width || VActive != Height || HBlank == 0 || VBlank == 0) {
+    return FALSE;
+  }
+
+  HSyncOffset = (UINT32)Dtd[8] | (((UINT32)Dtd[11] & 0xC0U) << 2);
+  HSyncWidth = (UINT32)Dtd[9] | (((UINT32)Dtd[11] & 0x30U) << 4);
+  VSyncOffset = ((UINT32)Dtd[10] >> 4) | (((UINT32)Dtd[11] & 0x0CU) << 2);
+  VSyncWidth = ((UINT32)Dtd[10] & 0x0FU) | (((UINT32)Dtd[11] & 0x03U) << 4);
+
+  ZeroMem (Timing, sizeof (*Timing));
+  Timing->Display = (UINT8)Display;
+  Timing->Clock = PixelClock10KHz * 10U;
+  Timing->HDisplay = (UINT16)HActive;
+  Timing->HSyncStart = (UINT16)(HActive + HSyncOffset);
+  Timing->HSyncEnd = (UINT16)(HActive + HSyncOffset + HSyncWidth);
+  Timing->HTotal = (UINT16)(HActive + HBlank);
+  Timing->VDisplay = (UINT16)VActive;
+  Timing->VSyncStart = (UINT16)(VActive + VSyncOffset);
+  Timing->VSyncEnd = (UINT16)(VActive + VSyncOffset + VSyncWidth);
+  Timing->VTotal = (UINT16)(VActive + VBlank);
+
+  if ((Dtd[17] & 0x80U) != 0) {
+    Timing->Flags |= RPI5_DISPLAY_TIMING_FLAG_INTERLACE;
+  }
+
+  /* EDID separate digital sync: bit 1 is H polarity, bit 2 is V polarity. */
+  if ((Dtd[17] & 0x18U) == 0x18U) {
+    if ((Dtd[17] & 0x02U) != 0) {
+      Timing->Flags |= BIT0;
+    }
+    if ((Dtd[17] & 0x04U) != 0) {
+      Timing->Flags |= BIT1;
+    }
+  }
+
+  FramePixels = (UINT64)Timing->HTotal * (UINT64)Timing->VTotal;
+  if (FramePixels != 0) {
+    Refresh = ((UINT64)Timing->Clock * 1000ULL + (FramePixels / 2ULL)) / FramePixels;
+    if (Refresh <= MAX_UINT16) {
+      Timing->VRefresh = (UINT16)Refresh;
+    }
+  }
+
+  return ValidateDisplayTiming (Timing, Width, Height);
+}
+
+STATIC
+BOOLEAN
+FindEdidDetailedTiming (
+  IN CONST UINT8 *Edid,
+  IN UINT32 BlocksRead,
+  IN UINT32 Width,
+  IN UINT32 Height,
+  IN UINT32 Display,
+  OUT RASPBERRY_PI_DISPLAY_TIMING *Timing
+  )
+{
+  UINT32 Descriptor;
   UINT32 Block;
-  UINT32 WantedBlocks;
+  UINT32 Offset;
+  CONST UINT8 *Extension;
+
+  if (Edid == NULL || Timing == NULL || BlocksRead == 0) {
+    return FALSE;
+  }
+
+  /* Base EDID has four 18-byte detailed descriptors starting at byte 54. */
+  for (Descriptor = 0; Descriptor < 4; Descriptor++) {
+    Offset = 54U + (Descriptor * 18U);
+    if (ParseEdidDetailedTiming (&Edid[Offset], Width, Height, Display, Timing)) {
+      return TRUE;
+    }
+  }
 
   /*
-   * This is a volatile per-boot contract.  Delete the previous value first so
-   * a failed query or SetVariable can never leave same-resolution stale timing
-   * behind for Windows to consume later in the boot.
+   * CTA-861 extension detailed timings start at byte 2's DTD offset and end
+   * before the checksum at byte 127. Other extension formats are ignored.
    */
-  (VOID)gST->RuntimeServices->SetVariable (L"Rpi5DisplayHandoff", &mRpi5DisplayHandoffGuid, 0, 0, NULL);
+  for (Block = 1; Block < BlocksRead; Block++) {
+    Extension = &Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE];
+    if (Extension[0] != 0x02U || Extension[2] < 4U || Extension[2] >= 127U) {
+      continue;
+    }
 
+    for (Offset = Extension[2]; Offset + 18U <= 127U; Offset += 18U) {
+      if (ParseEdidDetailedTiming (&Extension[Offset], Width, Height, Display, Timing)) {
+        return TRUE;
+      }
+    }
+  }
+
+  return FALSE;
+}
+
+STATIC
+EFI_STATUS
+ReadDisplayEdid (
+  IN UINT32 Display,
+  OUT UINT8 Edid[RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RASPBERRY_PI_EDID_BLOCK_SIZE],
+  OUT UINT32 *BlocksRead,
+  OUT BOOLEAN *Complete
+  )
+{
+  EFI_STATUS Status;
+  UINT32 Block;
+  UINT32 WantedBlocks;
+  UINT32 ReadLimit;
+
+  if (Edid == NULL || BlocksRead == NULL || Complete == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  ZeroMem (Edid,
+    RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RASPBERRY_PI_EDID_BLOCK_SIZE);
+  *BlocksRead = 0;
+  *Complete = FALSE;
+
+  Status = mFwProtocol->GetEdidBlockDisplay (Display, 0, &Edid[0]);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  if (!ValidateEdidBlock (&Edid[0], TRUE)) {
+    return EFI_COMPROMISED_DATA;
+  }
+
+  *BlocksRead = 1;
+  WantedBlocks = 1U + Edid[126];
+  ReadLimit = WantedBlocks;
+  if (ReadLimit > RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) {
+    ReadLimit = RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS;
+  }
+
+  for (Block = 1; Block < ReadLimit; Block++) {
+    Status = mFwProtocol->GetEdidBlockDisplay (
+                            Display,
+                            Block,
+                            &Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE]);
+    if (EFI_ERROR (Status) ||
+        !ValidateEdidBlock (&Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE], FALSE)) {
+      return EFI_SUCCESS;
+    }
+    (*BlocksRead)++;
+  }
+
+  if (WantedBlocks <= RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS &&
+      *BlocksRead == WantedBlocks) {
+    *Complete = TRUE;
+  }
+
+  return EFI_SUCCESS;
+}
+
+STATIC
+VOID
+CapturePixelValveRegisters (
+  IN UINT32 PixelValve
+  )
+{
+  RPI5_DISPLAY_PV_DIAG *Diag;
+  UINT64 Base;
+
+  if (PixelValve > 1) {
+    return;
+  }
+
+  Base = PixelValve == 0 ? RPI5_PV0_BASE : RPI5_PV1_BASE;
+  Diag = &mRpi5DisplayDiag.PixelValve[PixelValve];
+  Diag->Base = Base;
+  Diag->Control = MmioRead32 ((UINTN)(Base + RPI5_PV_CONTROL));
+  Diag->VControl = MmioRead32 ((UINTN)(Base + RPI5_PV_V_CONTROL));
+  Diag->Horza = MmioRead32 ((UINTN)(Base + RPI5_PV_HORZA));
+  Diag->Horzb = MmioRead32 ((UINTN)(Base + RPI5_PV_HORZB));
+  Diag->Verta = MmioRead32 ((UINTN)(Base + RPI5_PV_VERTA));
+  Diag->Vertb = MmioRead32 ((UINTN)(Base + RPI5_PV_VERTB));
+  Diag->Intstat = MmioRead32 ((UINTN)(Base + RPI5_PV_INTSTAT));
+
+  if ((Diag->Control & RPI5_PV_CONTROL_EN) != 0 &&
+      (Diag->VControl & RPI5_PV_VCONTROL_VIDEN) != 0) {
+    mRpi5DisplayDiag.StatusFlags |=
+      PixelValve == 0 ? RPI5_DISPLAY_DIAG_PV0_SCANNING
+                      : RPI5_DISPLAY_DIAG_PV1_SCANNING;
+  }
+}
+
+STATIC
+UINTN
+GetHdmiFrameCounterAddress (
+  IN UINT32 PixelValve
+  )
+{
+  return (UINTN)(RPI5_HDMI_HD_BASE +
+    (PixelValve == 0 ? RPI5_HDMI0_FRAME_COUNT : RPI5_HDMI1_FRAME_COUNT));
+}
+
+STATIC
+BOOLEAN
+MeasureHdmiFramePeriod (
+  IN UINT32 PixelValve,
+  OUT UINT64 *FramePeriodNs,
+  OUT UINT32 *FirstCounter,
+  OUT UINT32 *LastCounter
+  )
+{
+  UINTN CounterAddress;
+  UINT32 Initial;
+  UINT32 First;
+  UINT32 Current;
+  UINT32 Delta;
+  UINT32 Attempt;
+  UINT64 FirstNs;
+  UINT64 LastNs;
+
+  if (PixelValve > 1 || FramePeriodNs == NULL) {
+    return FALSE;
+  }
+
+  CounterAddress = GetHdmiFrameCounterAddress (PixelValve);
+  Initial = MmioRead32 (CounterAddress);
+  First = Initial;
+  FirstNs = 0;
+
+  /*
+   * First synchronize to a real frame-counter transition. This is read-only:
+   * unlike the previous VFP-status experiment, UEFI never touches PV_INTEN or
+   * PV_INTSTAT, leaving interrupt ownership entirely to Windows.
+   */
+  for (Attempt = 0; Attempt < RPI5_HDMI_COUNTER_WAIT_LOOPS; Attempt++) {
+    Current = MmioRead32 (CounterAddress);
+    if (Current != Initial) {
+      First = Current;
+      FirstNs = GetTimeInNanoSecond (GetPerformanceCounter ());
+      break;
+    }
+    MicroSecondDelay (RPI5_HDMI_COUNTER_WAIT_US);
+  }
+  if (FirstNs == 0) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display HDMI%u frame counter did not advance initial=0x%x addr=0x%Lx\\n",
+      PixelValve, Initial, (UINT64)CounterAddress));
+    return FALSE;
+  }
+
+  LastNs = FirstNs;
+  Current = First;
+  for (Attempt = 0; Attempt < RPI5_HDMI_COUNTER_WAIT_LOOPS; Attempt++) {
+    Current = MmioRead32 (CounterAddress);
+    Delta = Current - First;
+    if (Delta >= RPI5_HDMI_MEASURE_FRAMES) {
+      LastNs = GetTimeInNanoSecond (GetPerformanceCounter ());
+      break;
+    }
+    MicroSecondDelay (RPI5_HDMI_COUNTER_WAIT_US);
+  }
+
+  Delta = Current - First;
+  if (Delta < RPI5_HDMI_MEASURE_FRAMES || LastNs <= FirstNs) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display HDMI%u frame counter measurement timed out first=0x%x last=0x%x delta=%u\\n",
+      PixelValve, First, Current, Delta));
+    return FALSE;
+  }
+
+  *FramePeriodNs = (LastNs - FirstNs) / Delta;
+  if (*FramePeriodNs == 0) {
+    return FALSE;
+  }
+
+  if (FirstCounter != NULL) {
+    *FirstCounter = First;
+  }
+  if (LastCounter != NULL) {
+    *LastCounter = Current;
+  }
+
+  DEBUG ((DEBUG_INFO,
+    "Rpi5Display HDMI%u frame counter cadence first=0x%x last=0x%x delta=%u period=%Luns\\n",
+    PixelValve, First, Current, Delta, *FramePeriodNs));
+  return TRUE;
+}
+
+STATIC
+BOOLEAN
+ReadPixelValveTiming (
+  IN UINT32 Width,
+  IN UINT32 Height,
+  OUT UINT32 *Display,
+  OUT RASPBERRY_PI_DISPLAY_TIMING *Timing
+  )
+{
+  UINT32 PixelValve;
+  RPI5_DISPLAY_PV_DIAG *Diag;
+  UINT32 HSync;
+  UINT32 HBackPorch;
+  UINT32 HActive;
+  UINT32 HFrontPorch;
+  UINT32 VSync;
+  UINT32 VBackPorch;
+  UINT32 VActive;
+  UINT32 VFrontPorch;
+  UINT32 HTotal;
+  UINT32 VTotal;
+  UINT32 HorizontalScale;
+  UINT64 FramePeriodNs;
+  UINT32 FirstFrameCounter;
+  UINT32 LastFrameCounter;
+  UINT64 FramePixels;
+  UINT64 PixelClockHz;
+  UINT64 Refresh;
+
+  if (Display == NULL || Timing == NULL) {
+    return FALSE;
+  }
+
+  CapturePixelValveRegisters (0);
+  CapturePixelValveRegisters (1);
+
+  for (PixelValve = 0; PixelValve < 2; PixelValve++) {
+    Diag = &mRpi5DisplayDiag.PixelValve[PixelValve];
+
+    if ((Diag->Control & RPI5_PV_CONTROL_EN) == 0 ||
+        (Diag->VControl & RPI5_PV_VCONTROL_VIDEN) == 0 ||
+        (Diag->VControl & RPI5_PV_VCONTROL_INTERLACE) != 0) {
+      continue;
+    }
+
+    HSync = Diag->Horza & 0xFFFFU;
+    HBackPorch = (Diag->Horza >> 16) & 0xFFFFU;
+    HActive = Diag->Horzb & 0xFFFFU;
+    HFrontPorch = (Diag->Horzb >> 16) & 0xFFFFU;
+    VSync = Diag->Verta & 0xFFFFU;
+    VBackPorch = (Diag->Verta >> 16) & 0xFFFFU;
+    VActive = Diag->Vertb & 0xFFFFU;
+    VFrontPorch = (Diag->Vertb >> 16) & 0xFFFFU;
+
+    /*
+     * BCM2712 firmware can program the PixelValve horizontal fields in
+     * two-pixel clock units. Infer that packing only from the already-known
+     * GOP width instead of hard-coding a board-wide factor. The physical Pi
+     * diagnostic for 1920x1080 showed raw HACTIVE=960 with all horizontal
+     * porches/sync widths likewise halved, while vertical fields were native.
+     */
+    if (HActive == 0 || Width == 0 || (Width % HActive) != 0) {
+      continue;
+    }
+    HorizontalScale = Width / HActive;
+    if (HorizontalScale == 0 || HorizontalScale > 2) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display PixelValve%u unsupported horizontal scale rawActive=%u GOP=%u scale=%u\\n",
+        PixelValve, HActive, Width, HorizontalScale));
+      continue;
+    }
+
+    HSync *= HorizontalScale;
+    HBackPorch *= HorizontalScale;
+    HActive *= HorizontalScale;
+    HFrontPorch *= HorizontalScale;
+
+    HTotal = HActive + HFrontPorch + HSync + HBackPorch;
+    VTotal = VActive + VFrontPorch + VSync + VBackPorch;
+
+    if (HActive != Width || VActive != Height ||
+        HSync == 0 || VSync == 0 ||
+        HTotal <= HActive || VTotal <= VActive ||
+        HTotal > MAX_UINT16 || VTotal > MAX_UINT16) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display PixelValve%u geometry rejected control=0x%x vcontrol=0x%x "
+        "scale=%u h=%u+%u+%u+%u v=%u+%u+%u+%u GOP=%ux%u\\n",
+        PixelValve, Diag->Control, Diag->VControl, HorizontalScale,
+        HActive, HFrontPorch, HSync, HBackPorch,
+        VActive, VFrontPorch, VSync, VBackPorch,
+        Width, Height));
+      continue;
+    }
+
+    FirstFrameCounter = 0;
+    LastFrameCounter = 0;
+    if (!MeasureHdmiFramePeriod (
+           PixelValve,
+           &FramePeriodNs,
+           &FirstFrameCounter,
+           &LastFrameCounter)) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display PixelValve%u / HDMI%u frame-count cadence unavailable\\n",
+        PixelValve, PixelValve));
+      continue;
+    }
+
+    FramePixels = (UINT64)HTotal * (UINT64)VTotal;
+    PixelClockHz =
+      (FramePixels * 1000000000ULL + (FramePeriodNs / 2ULL)) / FramePeriodNs;
+    if (PixelClockHz < 1000000ULL || PixelClockHz > 4000000000ULL) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display PixelValve%u measured pixel clock out of range: %LuHz\\n",
+        PixelValve, PixelClockHz));
+      continue;
+    }
+
+    ZeroMem (Timing, sizeof (*Timing));
+    *Display = PixelValve == 0 ? 2U : 7U;
+    Timing->Display = (UINT8)*Display;
+    Timing->Clock = (UINT32)((PixelClockHz + 500ULL) / 1000ULL);
+    Timing->HDisplay = (UINT16)HActive;
+    Timing->HSyncStart = (UINT16)(HActive + HFrontPorch);
+    Timing->HSyncEnd = (UINT16)(HActive + HFrontPorch + HSync);
+    Timing->HTotal = (UINT16)HTotal;
+    Timing->VDisplay = (UINT16)VActive;
+    Timing->VSyncStart = (UINT16)(VActive + VFrontPorch);
+    Timing->VSyncEnd = (UINT16)(VActive + VFrontPorch + VSync);
+    Timing->VTotal = (UINT16)VTotal;
+
+    Refresh = (1000000000ULL + (FramePeriodNs / 2ULL)) / FramePeriodNs;
+    if (Refresh <= MAX_UINT16) {
+      Timing->VRefresh = (UINT16)Refresh;
+    }
+
+    if (!ValidateDisplayTiming (Timing, Width, Height)) {
+      continue;
+    }
+
+    mRpi5DisplayDiag.StatusFlags |=
+      RPI5_DISPLAY_DIAG_PV_TIMING_VALID |
+      RPI5_DISPLAY_DIAG_VBLANK_MEASURED;
+    mRpi5DisplayDiag.TimingSource = RPI5_DISPLAY_TIMING_SOURCE_PIXELVALVE;
+    mRpi5DisplayDiag.SelectedPixelValve = PixelValve;
+    mRpi5DisplayDiag.FramePeriodNs = FramePeriodNs;
+    mRpi5DisplayDiag.DerivedClockKHz = Timing->Clock;
+    mRpi5DisplayDiag.ActiveWidth = HActive;
+    mRpi5DisplayDiag.ActiveHeight = VActive;
+    mRpi5DisplayDiag.HTotal = HTotal;
+    mRpi5DisplayDiag.VTotal = VTotal;
+
+    DEBUG ((DEBUG_INFO,
+      "Rpi5Display handoff stage=timing-selected source=pixelvalve pv=%u "
+      "display=%u hdmi=%u scale=%u mode=%ux%u clock=%uKHz totals=%ux%u "
+      "period=%Luns refresh=%u frameCounter=0x%x->0x%x\\n",
+      PixelValve, *Display, PixelValve, HorizontalScale, Width, Height,
+      Timing->Clock, Timing->HTotal, Timing->VTotal, FramePeriodNs,
+      Timing->VRefresh, FirstFrameCounter, LastFrameCounter));
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+STATIC
+EFI_STATUS
+InstallDisplayDiagnosticsAcpi (
+  IN EFI_STATUS LastStatus,
+  IN UINT32 Width,
+  IN UINT32 Height
+  )
+{
+  RPI5_DISPLAY_DIAG_ACPI_TABLE Table;
+  EFI_ACPI_TABLE_PROTOCOL *AcpiTable;
+  EFI_STATUS Status;
+  UINTN TableKey;
+
+  CapturePixelValveRegisters (0);
+  CapturePixelValveRegisters (1);
+  mRpi5DisplayDiag.Version = 1;
+  mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_READY_TO_BOOT;
+  mRpi5DisplayDiag.LastStatus = (UINT64)(UINTN)LastStatus;
+  if (mRpi5DisplayDiag.ActiveWidth == 0) {
+    mRpi5DisplayDiag.ActiveWidth = Width;
+  }
+  if (mRpi5DisplayDiag.ActiveHeight == 0) {
+    mRpi5DisplayDiag.ActiveHeight = Height;
+  }
+
+  ZeroMem (&Table, sizeof (Table));
+  Table.Header.Signature = SIGNATURE_32 ('R', '5', 'D', 'G');
+  Table.Header.Length = sizeof (Table);
+  Table.Header.Revision = RPI5_DISPLAY_DIAG_ACPI_REVISION;
+  CopyMem (Table.Header.OemId, "RPIFW ", sizeof (Table.Header.OemId));
+  CopyMem (&Table.Header.OemTableId, "R5DGDIAG", sizeof (Table.Header.OemTableId));
+  Table.Header.OemRevision = 1;
+  Table.Header.CreatorId = SIGNATURE_32 ('R', 'P', 'I', '5');
+  Table.Header.CreatorRevision = 1;
+  CopyMem (&Table.Diag, &mRpi5DisplayDiag, sizeof (Table.Diag));
+
+  Status = gBS->LocateProtocol (
+                  &gEfiAcpiTableProtocolGuid,
+                  NULL,
+                  (VOID **)&AcpiTable);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display R5DG stage=locate-acpi status=%r\\n", Status));
+    return Status;
+  }
+
+  TableKey = 0;
+  Status = AcpiTable->InstallAcpiTable (
+                        AcpiTable,
+                        &Table,
+                        sizeof (Table),
+                        &TableKey);
+  if (!EFI_ERROR (Status)) {
+    mRpi5DisplayDiagTableKey = TableKey;
+  }
+
+  DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
+    "Rpi5Display R5DG stage=install status=%r key=%Lu flags=0x%x source=%u "
+    "selectedPv=%u period=%Luns clock=%uKHz GOP=%ux%u\\n",
+    Status, (UINT64)TableKey, mRpi5DisplayDiag.StatusFlags,
+    mRpi5DisplayDiag.TimingSource, mRpi5DisplayDiag.SelectedPixelValve,
+    mRpi5DisplayDiag.FramePeriodNs, mRpi5DisplayDiag.DerivedClockKHz,
+    Width, Height));
+  return Status;
+}
+
+STATIC
+EFI_STATUS
+InstallDisplayHandoffAcpi (
+  IN CONST RPI5_DISPLAY_HANDOFF *Handoff
+  )
+{
+  RPI5_DISPLAY_HANDOFF_ACPI_TABLE Table;
+  EFI_ACPI_TABLE_PROTOCOL *AcpiTable;
+  EFI_STATUS Status;
+  UINTN TableKey;
+
+  if (Handoff == NULL ||
+      (Handoff->Flags & RPI5_DISPLAY_HANDOFF_TIMING_VALID) == 0) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  ZeroMem (&Table, sizeof (Table));
+  Table.Header.Signature = SIGNATURE_32 ('R', '5', 'D', 'H');
+  Table.Header.Length = sizeof (Table);
+  Table.Header.Revision = RPI5_DISPLAY_ACPI_REVISION;
+  CopyMem (Table.Header.OemId, "RPIFW ", sizeof (Table.Header.OemId));
+  CopyMem (&Table.Header.OemTableId, "R5DHHAND", sizeof (Table.Header.OemTableId));
+  Table.Header.OemRevision = 1;
+  Table.Header.CreatorId = SIGNATURE_32 ('R', 'P', 'I', '5');
+  Table.Header.CreatorRevision = 1;
+  CopyMem (&Table.Handoff, Handoff, sizeof (Table.Handoff));
+
+  Status = gBS->LocateProtocol (
+                  &gEfiAcpiTableProtocolGuid,
+                  NULL,
+                  (VOID **)&AcpiTable);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display ACPI handoff stage=locate-acpi status=%r\\n", Status));
+    return Status;
+  }
+
+  TableKey = 0;
+  Status = AcpiTable->InstallAcpiTable (
+                        AcpiTable,
+                        &Table,
+                        sizeof (Table),
+                        &TableKey);
+  if (!EFI_ERROR (Status)) {
+    mRpi5DisplayAcpiTableKey = TableKey;
+  }
+
+  DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
+    "Rpi5Display ACPI handoff stage=install status=%r key=%Lu display=%u flags=0x%x clock=%uKHz totals=%ux%u\\n",
+    Status, (UINT64)TableKey, Handoff->DisplayNumber, Handoff->Flags,
+    Handoff->Timing.Clock, Handoff->Timing.HTotal, Handoff->Timing.VTotal));
+  return Status;
+}
+
+STATIC
+EFI_STATUS
+PublishDisplayHandoff (
+  IN UINT32 Width,
+  IN UINT32 Height,
+  IN BOOLEAN InstallAcpi
+  )
+{
+  RPI5_DISPLAY_HANDOFF Handoff;
+  RPI5_DISPLAY_HANDOFF Verify;
+  RASPBERRY_PI_DISPLAY_TIMING Timing;
+  EFI_STATUS Status;
+  EFI_STATUS VariableStatus;
+  EFI_STATUS AcpiStatus;
+  UINTN VerifySize;
+  UINT32 VerifyAttributes;
+  UINT32 ExpectedAttributes;
+  UINT32 Display;
+  UINT32 DisplayCount;
+  UINT32 DisplayIndex;
+  UINT32 ProbeCount;
+  UINT32 EdidBlocksRead;
+  BOOLEAN EdidComplete;
+  BOOLEAN TimingFound;
+  UINT8 CandidateEdid[RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RASPBERRY_PI_EDID_BLOCK_SIZE];
+
+  ExpectedAttributes = EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS;
+
+  ZeroMem (&mRpi5DisplayDiag, sizeof (mRpi5DisplayDiag));
+  mRpi5DisplayDiag.Version = 1;
+  mRpi5DisplayDiag.SelectedPixelValve = MAX_UINT32;
+  mRpi5DisplayDiag.ActiveWidth = Width;
+  mRpi5DisplayDiag.ActiveHeight = Height;
+
+  /*
+   * Do not delete a previously verified handoff before a replacement is ready.
+   * A late GOP SetMode can occur after ReadyToBoot. If its timing query fails,
+   * keeping the previous per-boot value is safer: the Windows driver also
+   * validates exact POST geometry before accepting it. The variable is volatile,
+   * so it cannot survive a reboot.
+   */
   ZeroMem (&Handoff, sizeof (Handoff));
   Handoff.Signature = RPI5_DISPLAY_HANDOFF_SIGNATURE;
   Handoff.Version = RPI5_DISPLAY_HANDOFF_VERSION;
   Handoff.Size = sizeof (Handoff);
 
   /*
-   * Legacy framebuffer calls operate on logical framebuffer display index 0.
-   * Translate that index to the firmware/DispmanX display ID first.  Do not
-   * guess 0/1 from geometry: current firmware IDs include HDMI0=2 and HDMI1=7.
+   * Follow the same firmware-display discovery model used by Raspberry Pi
+   * Linux: enumerate logical framebuffer displays, translate each logical
+   * index through GET_DISPLAY_ID, then choose the active timing that matches
+   * the GOP mode. This avoids assuming logical framebuffer index 0 is HDMI0.
    */
+  DisplayCount = 0;
+  Status = mFwProtocol->GetFbNumDisplays (&DisplayCount);
+  if (EFI_ERROR (Status) || DisplayCount == 0) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=display-count status=%r count=%u; probing first two logical displays\\n",
+      Status, DisplayCount));
+    ProbeCount = 2;
+  } else {
+    ProbeCount = DisplayCount;
+    if (ProbeCount > RPI5_DISPLAY_HANDOFF_MAX_PROBE_DISPLAYS) {
+      ProbeCount = RPI5_DISPLAY_HANDOFF_MAX_PROBE_DISPLAYS;
+    }
+  }
+
+  TimingFound = FALSE;
   Display = 0;
-  Status = mFwProtocol->GetFbDisplayId (0, &Display);
-  if (!EFI_ERROR (Status) && Display <= 0xFFU) {
-    ZeroMem (&Timing, sizeof (Timing));
-    Status = mFwProtocol->GetDisplayTiming (Display, &Timing);
-    if (!EFI_ERROR (Status) && Timing.Clock != 0 && Timing.Clock <= 4000000U &&
-        Timing.HDisplay == Width && Timing.VDisplay == Height &&
-        Timing.HTotal >= Timing.HDisplay && Timing.VTotal >= Timing.VDisplay &&
-        Timing.HSyncStart >= Timing.HDisplay &&
-        Timing.HSyncEnd >= Timing.HSyncStart && Timing.HSyncEnd <= Timing.HTotal &&
-        Timing.VSyncStart >= Timing.VDisplay &&
-        Timing.VSyncEnd >= Timing.VSyncStart && Timing.VSyncEnd <= Timing.VTotal &&
-        (Timing.Flags & RPI5_DISPLAY_TIMING_FLAG_INTERLACE) == 0) {
-      Handoff.DisplayNumber = Display;
-      CopyMem (&Handoff.Timing, &Timing, sizeof (Timing));
-      Handoff.Flags |= RPI5_DISPLAY_HANDOFF_TIMING_VALID;
+  ZeroMem (&Timing, sizeof (Timing));
+
+  for (DisplayIndex = 0; DisplayIndex < ProbeCount; DisplayIndex++) {
+    RASPBERRY_PI_DISPLAY_TIMING CandidateTiming;
+    UINT32 CandidateDisplay;
+
+    CandidateDisplay = DisplayIndex;
+    Status = mFwProtocol->GetFbDisplayId (DisplayIndex, &CandidateDisplay);
+    if (EFI_ERROR (Status) || CandidateDisplay > 0xFFU) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display handoff stage=display-id index=%u status=%r display=%u\\n",
+        DisplayIndex, Status, CandidateDisplay));
+      continue;
     }
+
+    ZeroMem (&CandidateTiming, sizeof (CandidateTiming));
+    Status = mFwProtocol->GetDisplayTiming (CandidateDisplay, &CandidateTiming);
+    if (!EFI_ERROR (Status) &&
+        ValidateDisplayTiming (&CandidateTiming, Width, Height)) {
+      Display = CandidateDisplay;
+      CopyMem (&Timing, &CandidateTiming, sizeof (Timing));
+      TimingFound = TRUE;
+          mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_FW_TIMING_VALID;
+      mRpi5DisplayDiag.TimingSource = RPI5_DISPLAY_TIMING_SOURCE_FIRMWARE;
+      mRpi5DisplayDiag.DerivedClockKHz = Timing.Clock;
+      mRpi5DisplayDiag.ActiveWidth = Timing.HDisplay;
+      mRpi5DisplayDiag.ActiveHeight = Timing.VDisplay;
+      mRpi5DisplayDiag.HTotal = Timing.HTotal;
+      mRpi5DisplayDiag.VTotal = Timing.VTotal;
+      DEBUG ((DEBUG_INFO,
+        "Rpi5Display handoff stage=timing-selected source=firmware index=%u display=%u "
+        "mode=%ux%u clock=%u totals=%ux%u\\n",
+        DisplayIndex, Display, Width, Height, Timing.Clock,
+        Timing.HTotal, Timing.VTotal));
+      break;
+    }
+
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=timing-fallback index=%u display=%u status=%r "
+      "fw=%ux%u clock=%u totals=%ux%u flags=0x%x\\n",
+      DisplayIndex, CandidateDisplay, Status,
+      CandidateTiming.HDisplay, CandidateTiming.VDisplay,
+      CandidateTiming.Clock, CandidateTiming.HTotal,
+      CandidateTiming.VTotal, CandidateTiming.Flags));
+
+    EdidBlocksRead = 0;
+    EdidComplete = FALSE;
+    Status = ReadDisplayEdid (
+               CandidateDisplay,
+               CandidateEdid,
+               &EdidBlocksRead,
+               &EdidComplete);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display handoff stage=edid-read index=%u display=%u status=%r\\n",
+        DisplayIndex, CandidateDisplay, Status));
+      continue;
+    }
+
+    ZeroMem (&CandidateTiming, sizeof (CandidateTiming));
+    if (!FindEdidDetailedTiming (
+           CandidateEdid,
+           EdidBlocksRead,
+           Width,
+           Height,
+           CandidateDisplay,
+           &CandidateTiming)) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display handoff stage=edid-no-matching-dtd index=%u display=%u "
+        "mode=%ux%u blocks=%u complete=%u\\n",
+        DisplayIndex, CandidateDisplay, Width, Height,
+        EdidBlocksRead, EdidComplete));
+      continue;
+    }
+
+    Display = CandidateDisplay;
+    CopyMem (&Timing, &CandidateTiming, sizeof (Timing));
+    TimingFound = TRUE;
+    mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_EDID_TIMING_VALID;
+    mRpi5DisplayDiag.TimingSource = RPI5_DISPLAY_TIMING_SOURCE_EDID;
+    mRpi5DisplayDiag.DerivedClockKHz = Timing.Clock;
+    mRpi5DisplayDiag.ActiveWidth = Timing.HDisplay;
+    mRpi5DisplayDiag.ActiveHeight = Timing.VDisplay;
+    mRpi5DisplayDiag.HTotal = Timing.HTotal;
+    mRpi5DisplayDiag.VTotal = Timing.VTotal;
+    DEBUG ((DEBUG_INFO,
+      "Rpi5Display handoff stage=timing-selected source=edid index=%u display=%u "
+      "mode=%ux%u clock=%u totals=%ux%u refresh=%u\\n",
+      DisplayIndex, Display, Width, Height, Timing.Clock,
+      Timing.HTotal, Timing.VTotal, Timing.VRefresh));
+    break;
   }
 
-  if ((Handoff.Flags & RPI5_DISPLAY_HANDOFF_TIMING_VALID) != 0) {
-    Status = mFwProtocol->GetEdidBlockDisplay (Handoff.DisplayNumber, 0, &Handoff.Edid[0]);
-    if (!EFI_ERROR (Status) && ValidateEdidBlock (&Handoff.Edid[0], TRUE)) {
-      WantedBlocks = 1U + Handoff.Edid[126];
-
-      /*
-       * Publish EDID only if the complete monitor-declared block chain fits the
-       * version-1 contract and every block was read with a valid checksum.
-       * Timing remains usable on its own if a large/corrupt EDID is rejected.
-       */
-      if (WantedBlocks <= RPI5_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) {
-        Handoff.EdidBlockCount = 1;
-        for (Block = 1; Block < WantedBlocks; Block++) {
-          Status = mFwProtocol->GetEdidBlockDisplay (
-                                  Handoff.DisplayNumber,
-                                  Block,
-                                  &Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE]);
-          if (EFI_ERROR (Status) ||
-              !ValidateEdidBlock (&Handoff.Edid[Block * RASPBERRY_PI_EDID_BLOCK_SIZE], FALSE)) {
-            break;
-          }
-          Handoff.EdidBlockCount++;
+  if (!TimingFound) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=no-mailbox-or-edid-timing mode=%ux%u probed=%u; trying PixelValve\\n",
+      Width, Height, ProbeCount));
+    if (ReadPixelValveTiming (Width, Height, &Display, &Timing)) {
+      TimingFound = TRUE;
         }
-        if (Handoff.EdidBlockCount == WantedBlocks) {
-          Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
-        }
-      }
-    }
-
-    if ((Handoff.Flags & RPI5_DISPLAY_HANDOFF_EDID_VALID) == 0) {
-      Handoff.EdidBlockCount = 0;
-      ZeroMem (Handoff.Edid, sizeof (Handoff.Edid));
-    }
   }
 
-  if (Handoff.Flags == 0) {
-    return;
+  if (!TimingFound) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=no-matching-timing mode=%ux%u probed=%u\\n",
+      Width, Height, ProbeCount));
+    return EFI_NOT_FOUND;
   }
 
-  Status = gST->RuntimeServices->SetVariable (
+  Handoff.DisplayNumber = Display;
+  CopyMem (&Handoff.Timing, &Timing, sizeof (Timing));
+  Handoff.Flags |= RPI5_DISPLAY_HANDOFF_TIMING_VALID;
+
+  EdidBlocksRead = 0;
+  EdidComplete = FALSE;
+  Status = ReadDisplayEdid (
+             Display,
+             Handoff.Edid,
+             &EdidBlocksRead,
+             &EdidComplete);
+  if (!EFI_ERROR (Status) && EdidComplete) {
+    Handoff.EdidBlockCount = EdidBlocksRead;
+    Handoff.Flags |= RPI5_DISPLAY_HANDOFF_EDID_VALID;
+    mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_EDID_COMPLETE;
+  } else {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display handoff stage=edid-optional status=%r display=%u blocks=%u complete=%u\\n",
+      Status, Display, EdidBlocksRead, EdidComplete));
+    Handoff.EdidBlockCount = 0;
+    ZeroMem (Handoff.Edid, sizeof (Handoff.Edid));
+  }
+
+  DEBUG ((DEBUG_INFO,
+    "Rpi5Display handoff stage=timing-source source=%u display=%u\\n",
+    mRpi5DisplayDiag.TimingSource, Display));
+
+  VariableStatus = gST->RuntimeServices->SetVariable (
                   L"Rpi5DisplayHandoff",
                   &mRpi5DisplayHandoffGuid,
-                  EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+                  ExpectedAttributes,
                   sizeof (Handoff),
                   &Handoff);
-  DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
-    "Rpi5Display handoff: display=%u flags=0x%x %ux%u clock=%uKHz edidBlocks=%u status=%r\\n",
-    Handoff.DisplayNumber, Handoff.Flags, Width, Height, Handoff.Timing.Clock,
-    Handoff.EdidBlockCount, Status));
+  if (EFI_ERROR (VariableStatus)) {
+    DEBUG ((DEBUG_WARN,
+      "Rpi5Display variable handoff stage=set-variable status=%r display=%u flags=0x%x\\n",
+      VariableStatus, Display, Handoff.Flags));
+  } else {
+    ZeroMem (&Verify, sizeof (Verify));
+    VerifySize = sizeof (Verify);
+    VerifyAttributes = 0;
+    Status = gST->RuntimeServices->GetVariable (
+                    L"Rpi5DisplayHandoff",
+                    &mRpi5DisplayHandoffGuid,
+                    &VerifyAttributes,
+                    &VerifySize,
+                    &Verify);
+    if (EFI_ERROR (Status) ||
+        VerifySize != sizeof (Verify) ||
+        VerifyAttributes != ExpectedAttributes ||
+        CompareMem (&Verify, &Handoff, sizeof (Handoff)) != 0) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display variable handoff stage=verify status=%r bytes=%u attrs=0x%x expected=0x%x\\n",
+        Status, (UINT32)VerifySize, VerifyAttributes, ExpectedAttributes));
+      (VOID)gST->RuntimeServices->SetVariable (
+                                    L"Rpi5DisplayHandoff",
+                                    &mRpi5DisplayHandoffGuid,
+                                    0,
+                                    0,
+                                    NULL);
+      VariableStatus = EFI_ERROR (Status) ? Status : EFI_COMPROMISED_DATA;
+    } else {
+      VariableStatus = EFI_SUCCESS;
+      mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_VARIABLE_PUBLISHED;
+      DEBUG ((DEBUG_INFO,
+        "Rpi5Display variable handoff stage=published display=%u flags=0x%x %ux%u "
+        "clock=%uKHz totals=%ux%u refreshHint=%u edidBlocks=%u attrs=0x%x\\n",
+        Handoff.DisplayNumber, Handoff.Flags, Width, Height, Handoff.Timing.Clock,
+        Handoff.Timing.HTotal, Handoff.Timing.VTotal, Handoff.Timing.VRefresh,
+        Handoff.EdidBlockCount, VerifyAttributes));
+    }
+  }
+
+  AcpiStatus = EFI_NOT_READY;
+  if (InstallAcpi) {
+    AcpiStatus = InstallDisplayHandoffAcpi (&Handoff);
+    if (!EFI_ERROR (AcpiStatus)) {
+      mRpi5DisplayDiag.StatusFlags |= RPI5_DISPLAY_DIAG_R5DH_INSTALLED;
+    }
+  }
+
+  if (!EFI_ERROR (VariableStatus) ||
+      (InstallAcpi && !EFI_ERROR (AcpiStatus))) {
+    return EFI_SUCCESS;
+  }
+
+  return InstallAcpi ? AcpiStatus : VariableStatus;
+}
+
+STATIC
+VOID
+EFIAPI
+Rpi5DisplayReadyToBoot (
+  IN EFI_EVENT Event,
+  IN VOID *Context
+  )
+{
+  EFI_STATUS Status;
+  EFI_STATUS DiagStatus;
+  UINT32 Width;
+  UINT32 Height;
+
+  (VOID)Context;
+  Width = 0;
+  Height = 0;
+  Status = EFI_NOT_READY;
+
+  if (gDisplayProto.Mode == NULL || gDisplayProto.Mode->Info == NULL) {
+    DEBUG ((DEBUG_WARN, "Rpi5Display handoff ReadyToBoot: GOP mode unavailable\\n"));
+  } else {
+    Width = gDisplayProto.Mode->Info->HorizontalResolution;
+    Height = gDisplayProto.Mode->Info->VerticalResolution;
+    Status = PublishDisplayHandoff (Width, Height, TRUE);
+    DEBUG ((EFI_ERROR (Status) ? DEBUG_WARN : DEBUG_INFO,
+      "Rpi5Display handoff ReadyToBoot status=%r\\n", Status));
+  }
+
+  /*
+   * Always publish R5DG even if no timing source produced a valid R5DH.
+   * This makes UEFI->Windows ACPI transport independently observable.
+   */
+  DiagStatus = InstallDisplayDiagnosticsAcpi (Status, Width, Height);
+  DEBUG ((EFI_ERROR (DiagStatus) ? DEBUG_WARN : DEBUG_INFO,
+    "Rpi5Display diagnostics ReadyToBoot status=%r\\n", DiagStatus));
+
+  if (Event != NULL) {
+    (VOID)gBS->CloseEvent (Event);
+  }
+  mRpi5DisplayReadyToBootEvent = NULL;
 }
 
 """
@@ -444,8 +1431,36 @@ DisplaySetMode (
         ns.reverse)
     replace_one(disp,
         "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  ClearScreen (This);",
-        "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  PublishDisplayHandoff (Mode->Width, Mode->Height);\n\n  ClearScreen (This);",
+        "  DEBUG((DEBUG_INFO, \"Reported Mode->FrameBufferSize is %u\\n\", This->Mode->FrameBufferSize));\n\n  (VOID)PublishDisplayHandoff (Mode->Width, Mode->Height, FALSE);\n\n  ClearScreen (This);",
         ns.reverse)
+
+    gop_install = """\
+  Status = gBS->InstallMultipleProtocolInterfaces (
+    &Controller, &gEfiGraphicsOutputProtocolGuid,
+    &gDisplayProto, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Done;
+  }
+
+"""
+    gop_install_ready = gop_install + """\
+  if (mRpi5DisplayReadyToBootEvent == NULL) {
+    EFI_STATUS EventStatus;
+    EventStatus = EfiCreateEventReadyToBootEx (
+                    TPL_CALLBACK,
+                    Rpi5DisplayReadyToBoot,
+                    NULL,
+                    &mRpi5DisplayReadyToBootEvent);
+    if (EFI_ERROR (EventStatus)) {
+      DEBUG ((DEBUG_WARN,
+        "Rpi5Display handoff: ReadyToBoot event creation failed: %r\\n",
+        EventStatus));
+      mRpi5DisplayReadyToBootEvent = NULL;
+    }
+  }
+
+"""
+    replace_one(disp, gop_install, gop_install_ready, ns.reverse)
 
 if __name__ == "__main__":
     main()
