@@ -1,175 +1,206 @@
+# Damian Edition — direct CYW43455 Wi-Fi extension
+
+This branch deliberately uses **Damian's Raspberry Pi 5 UEFI as the platform base**
+and keeps its ACPI/native-driver contract intact.
+
+Pinned baseline:
+
+- `damian5466/rpi5-uefi`: `21c5034031a44595fbc008c38698889fe070a409` (release 0.1a)
+- `damian5466/edk2-platforms`: `313a8915f8b8358ff5c5716668cccb59c11dd20d`
+- Damian ACPI contract revision 1 is authoritative.
+- Damian fan, graphics, mailbox/RTC, NVRAM, GPIO, RP1 services and device graph
+  are not replaced by Farjanatech equivalents.
+
+The only extension is an optional **Windows Direct NDIS** mode for the on-board
+CYW43455 Wi-Fi controller. The default remains Damian's original **Standard SD Bus**
+mode.
+
+## Direct Wi-Fi design
+
+The direct mode uses a new, collision-free ACPI hardware ID:
+
+`ACPI\\RPI1060`
+
+Damian already owns `ACPI\\RPI0011` for the RP1 shared interrupt provider, so
+Farjanatech's historical Wi-Fi ID `RPI0011` is intentionally not reused.
+
+In Standard SD Bus mode, Damian's original `SDC1` node remains present and
+unchanged. In Direct NDIS mode, `SDC1` is hidden and a mutually-exclusive
+`WFD0/RPI1060` node owns the same SDIO2 host MMIO and IRQ 306. Firmware then
+applies only the direct-SDIO host preparation that the Farjanatech driver needs:
+SD pin selection, 200 MHz capability metadata, forced card-present, and the
+150 ms WL_ON settle delay. It intentionally does **not** apply the old
+MAX_50MHZ_MODE strap override.
+
+The configuration is available under:
+
+`Device Manager -> Raspberry Pi Configuration -> ACPI / Device Tree -> Wi-Fi SDIO Mode`
+
+Options:
+
+- **Standard SD Bus (Damian)** — default, original Damian behavior.
+- **Windows Direct NDIS (Farjanatech)** — exposes `ACPI\\RPI1060`.
+
+## Companion driver
+
+Farjanatech's current Wi-Fi driver 0.7.1.20 still binds to
+`ACPI\\RPI0011`. Do **not** install that unmodified package with this branch:
+on Damian firmware, `RPI0011` is the RP1 IRQ provider.
+
+A source patch is included at
+`driver-patches/0001-rpi5cyw-bind-rpi1060.patch`. Apply it to
+`farjanatech/rpi5-wifi-driver-win11arm`, rebuild/re-sign the package, and use
+that matching driver with Direct NDIS mode.
+
+---
+
 # Raspberry Pi 5 UEFI
+This fork contains a TF-A + EDK2 UEFI firmware port for Raspberry Pi 5, including
+BCM2712 D0 display/GPIO compatibility, ACPI peripheral descriptions, SD voltage
+switching, RP1 handoff, fan control, and file-backed NVRAM.
 
-TF-A and EDK2 firmware for the Raspberry Pi 5 and Compute Module 5, including
-boards based on the BCM2712 D0 revision.
+Native driver authors should read the [ACPI driver contract](edk2-platforms/Platform/RaspberryPi/RPi5/ACPI-CONTRACT.md)
+for resource ownership, the boot device connection graph, and shared-service interfaces.
 
-![EDK2 setup screen](images/edk2_setup_screen.png)
+![EDK2 Setup Screen](images/edk2_setup_screen.png)
 
-## Project lineage
+# Getting started
+Check the [Supported OSes](#supported-oses) and [Supported peripherals in UEFI](#supported-peripherals-in-uefi) sections to see what's currently possible with this firmware.
 
-This repository is the second continuation of the original Raspberry Pi 5 UEFI
-work:
+## 1. Prerequisites
+* #### SD card, USB or NVME drive to store the firmware and/or operating system on
 
-- [Mario Bălănică](https://github.com/worproject) created the original port,
-  including the early platform, ACPI, USB, SD, PCIe, RTC and display support.
-- [Matt P](https://github.com/NumberOneGit) carried it forward for BCM2712 D0
-  boards and CM5, fixed the changed pin control and UART/display setup, and kept
-  it building with newer EDK2 revisions.
-- This fork rebases that work on current upstream firmware projects and extends
-  the ACPI hand-off for RP1 Ethernet and USB, SDIO Wi-Fi, microSD and
-  VideoCore VII.
+  **Note:** For OS, it is highly suggested to use a quality drive with **good random I/O performance**. In SD terms this means an A1/A2-rated card.
+  
+* #### Quality power supply and cable that can provide at least 5V 3A (15 W)
+  Depending on the peripherals you use, more power may be needed. The recommended official power supply provides 5.1V 5A (25 W).
 
-Thank you to Mario and Matt. This branch exists because of the work they did
-first.
+  **Note:** Using an inadequate supply can cause all sorts of issues, from underclocking to random crashes.
 
-## What is new in this branch
+* #### HDMI display
 
-- The four firmware dependencies are rebased on their current upstream
-  `master` branches and published as matching `rpi5` branches.
-- RP1 Ethernet and USB are initialized before the OS starts. ACPI describes the
-  devices and the firmware supplies the board MAC address.
-- ACPI now describes the Wi-Fi SDIO host, its power control, and VideoCore VII.
-- The OS owns microSD slot power through an ACPI power resource. The EDK2 SD
-  host also has the BCM2712 signaling-voltage override needed for UHS modes.
-- FreeLoader is recognized during ACPI hand-off so ReactOS receives the
-  Windows-compatible PCIe layout.
-- `build.sh` works on Linux and macOS. CI builds both Debug and Release images
-  and records the exact revisions and SHA-256 hashes used for each release.
+* #### Some form of cooling (fan, heatsink)
+  The device may thermal throttle otherwise.
 
-## Current status
+Optionally, if display is not available or for debugging purposes, an UART serial adapter compatible with the special connector. Configuration is `115200 8n1`.
 
-“Working after OS hand-off” means the firmware initializes and describes the
-hardware, while the operating system still needs a suitable driver.
+## 2. Download the firmware image
+The latest version can be obtained from [Releases](https://github.com/damian5466/rpi5-uefi/releases).
 
-| Area | Status | Notes |
+## 3. Flash the firmware
+Prepare an empty boot drive by formatting the first partition as FAT32, then extract the archive downloaded above to the root of this partition.
+
+**Note:** do not rename or delete any of the boot files.
+
+## 4. Connect peripherals and power on the device
+You should first see a QR code screen, then shortly after, a centered Raspberry Pi logo with progress bar at the bottom. This indicates that the UEFI firmware has loaded.
+
+At this stage, you can press <kbd>Esc</kbd> to enter the firmware setup, <kbd>F1</kbd> to launch the UEFI Shell, or, provided you also have an UEFI bootloader/app on a storage device, you can let the system automatically run that, which is the default behavior if no action is taken.
+
+Check the configuration options described below, some of which may need to be changed depending on the OS used.
+
+# Configuration settings
+The UEFI provides options that can be viewed and changed using the UI configuration menu.
+
+Configuration through the user interface is fairly straightforward and help/navigation information is provided around the menus.
+
+## PCI Express
+The PCIe connector is limited to Gen 2 speed by default. For other modes, go to `Device Manager`->`Raspberry Pi Configuration`->`PCI Express` and change `Link Speed`.
+
+> [!NOTE]
+> Raspberry Pi 5 is not officially rated for PCIe Gen 3. Some devices and adapters may run into reliability issues at this speed, either due to signal integrity or insufficient power.
+
+## Linux
+* If you're getting a Synchronous Exception when booting certain distros, go to `Device Manager`->`EFI Memory Attribute Protocol` and untick `Enable Protocol`.
+
+* For maximum SD card performance, go to `Device Manager`->`Raspberry Pi Configuration`->`ACPI / Device Tree` and set `Compatibility Mode` to `Full Bay Trail`, then untick `Limit UHS-I Modes`.
+
+  **Warning:** this may affect other OSes!
+
+* To enable PCIe support, go to `Device Manager`->`Raspberry Pi Configuration`->`ACPI / Device Tree` and change `ECAM Compatibility Mode` to `AMAZON GRAVITON`.
+
+* If you're running the RPi downstream kernel, enabling Device Tree instead of ACPI will provide better hardware support. To do so, go to `Device Manager`->`Raspberry Pi Configuration`->`ACPI / Device Tree` and change `System Table Mode`.
+
+> [!NOTE]
+> Windows support was tested with drivers from [rpi5-windows-drivers](https://github.com/damian5466/rpi5-windows-drivers).
+
+# Status
+
+## Supported OSes
+### In ACPI mode
+ACPI support is currently under development and limited to a few devices that have existing driver bindings.
+
+| OS | Version | Tested/supported hardware | Notes |
+| --- | --- | --- | --- |
+| Windows | 11 (26100.9539) | Display, USB, SD, SDIO, PCIe, Ethernet, PWM | * SD is limited to DDR50.<br> * PL011 UART driver fails to start, but debugging over it still works via DBG2.<br> * PCIe is limited to single-function devices. |
+
+### In Device Tree mode
+The included DTB is meant for the RPi downstream 6.1.y kernel.
+
+## Supported peripherals in UEFI
+> [!NOTE]
+> Only devices relevant to the firmware itself (not OS) are listed below.
+
+| Device | Status | Notes |
 | --- | --- | --- |
-| UEFI setup and boot | Working | Raspberry Pi 5 and CM5, including D0 boards. |
-| HDMI framebuffer | Working | Display is provided by the VideoCore firmware. Use a current Raspberry Pi EEPROM on D0 boards. |
-| RP1 USB | Working | Both xHCI controllers are initialized and exposed through ACPI. |
-| PCIe and NVMe | Working | Gen 2 is the default; Gen 3 can be selected in setup. |
-| microSD | Working | UEFI supports modes up to SDR104. ACPI power and voltage switching are included; the final speed depends on the OS driver. |
-| RP1 Ethernet | **Working after OS hand-off** | The GEM/PHY is initialized, the MAC address is programmed, and ACPI exposes a Cadence GEM-compatible device. A matching OS driver is required; UEFI PXE is not provided. |
-| SDIO Wi-Fi | Partial | The host and power resource are described in ACPI. The OS still needs the CYW43455 driver and firmware. |
-| VideoCore VII | Partial | Mailbox, clock and memory resources are described in ACPI. 3D acceleration remains an OS-driver concern. |
-| UART | Working | PL011 on the dedicated connector at `115200 8n1`. |
-| RTC and RNG | Working | RTC time/alarm and the hardware random-number source are available. |
-| CM5 eMMC | Not confirmed | Use NVMe or USB when dependable eMMC boot is required. |
-| RP1 GPIO and PWM | Not exposed | There are no general-purpose ACPI devices for these blocks yet. |
-| Persistent UEFI variables | Limited | EEPROM-backed NVRAM is not implemented. |
+| RP1 USB                            | 🟢 Working     | |
+| RP1 Ethernet                       | 🔴 Not working | |
+| RP1 GPIO                           | 🔴 Not working | |
+| RP1 PWM                            | 🟢 Working     | Cooling fan control and OS handoff. |
+| PCIe                               | 🟢 Working     | |
+| SD                                 | 🟢 Working     | SD cards up to SDR104. eMMC support is unknown. |
+| Display                            | 🟢 Working     | HDMI, driven by the VPU firmware. |
+| UART                               | 🟢 Working     | PL011 available on the dedicated connector at 115200 8n1. |
+| GPIO                               | 🟢 Working     | GIO/AON, pin function. |
+| RTC                                | 🟢 Working     | Get/set time, wake up alarm. |
+| RNG                                | 🟢 Working     | |
+| EEPROM                             | 🔴 Not working | Optional file-backed variable persistence is available. |
 
-ACPI support depends on the drivers available in the operating system. Device
-Tree mode remains the best choice for the Raspberry Pi downstream Linux kernel
-when full native hardware support is more important than a generic ACPI boot.
+## Building
+This process assumes a Linux machine. On Windows, use WSL.
 
-## Install
+1. Install required packages:
 
-You need:
+   For Ubuntu/Debian:
+   ```bash
+   sudo apt install git gcc g++ build-essential gcc-aarch64-linux-gnu iasl python3-pyelftools uuid-dev
+   ```
+   For Arch Linux:
+   ```bash
+   sudo pacman -Syu
+   sudo pacman -S git base-devel gcc dtc aarch64-linux-gnu-binutils aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc python python-pyelftools iasl --needed
+   ```
 
-- a FAT32-formatted SD card, USB drive or NVMe drive;
-- a reliable power supply and cable (the official 27 W supply is recommended);
-- cooling for sustained workloads;
-- optionally, a 3.3 V UART adapter for serial output.
+2. Clone the repository:
+   ```bash
+   git clone --recurse-submodules https://github.com/damian5466/rpi5-uefi.git
+   cd rpi5-uefi
+   ```
 
-Download the latest archive from
-[Releases](https://github.com/eotics-com/rpi5-uefi/releases), then extract it to
-the root of the FAT32 boot partition. Keep the filenames and directory layout
-unchanged.
+3. Build the image:
+   ```bash
+   ./build.sh
+   ```
+   Append `--help` for more details.
 
-On power-up, the Raspberry Pi boot screen is followed by the EDK2 logo. Press
-<kbd>Esc</kbd> for setup or <kbd>F1</kbd> for the UEFI Shell.
+If you get build errors, it is very likely that you're still missing some dependencies. The list of packages above is not complete and depending on the distro you may need to install additional ones. In most cases, looking up the error messages on the internet will point you at the right packages.
 
-## Configuration
+### Boot files
 
-### PCI Express
+Assemble the firmware image, configuration, and pinned boot support files:
 
-The external PCIe link defaults to Gen 2. Change it under
-`Device Manager` → `Raspberry Pi Configuration` → `PCI Express` → `Link Speed`.
-
-Raspberry Pi does not rate the board for PCIe Gen 3. Whether it is reliable
-depends on the adapter, cabling, device and power supply.
-
-### Linux
-
-- If a distribution stops with a synchronous exception, disable
-  `Device Manager` → `EFI Memory Attribute Protocol` → `Enable Protocol`.
-- For faster SD modes, select `Full Bay Trail` under
-  `Raspberry Pi Configuration` → `ACPI / Device Tree` → `Compatibility Mode`,
-  then disable `Limit UHS-I Modes`. This can reduce compatibility with other
-  operating systems.
-- If PCIe is not detected, set `ECAM Compatibility Mode` to
-  `AMAZON GRAVITON`.
-- For the Raspberry Pi downstream kernel, set `System Table Mode` to
-  `Device Tree`.
-
-## Build
-
-Clone the `rpi5` branch with all submodules:
-
-```sh
-git clone --branch rpi5 --recurse-submodules \
-  https://github.com/eotics-com/rpi5-uefi.git
-cd rpi5-uefi
+```bash
+mkdir -p Build/boot/release
+cp RPI_EFI.fd config.txt Build/boot/release/
+cd Build/boot/release
+mkdir -p overlays
+curl -fL https://raw.githubusercontent.com/raspberrypi/firmware/1e403e23baab5673f0494a200f57cd01287d5b1a/boot/bcm2712-rpi-5-b.dtb -o bcm2712-rpi-5-b.dtb
+curl -fL https://raw.githubusercontent.com/raspberrypi/firmware/bead686816848038563a542dc854346ab13253a2/boot/overlays/bcm2712d0.dtbo -o overlays/bcm2712d0.dtbo
+echo "c5432acc8373fa6311e147221b8ba5c8685b957730afac7592c5deac2b27e732  bcm2712-rpi-5-b.dtb" | sha256sum -c -
+echo "b73210c9256ff4b4963365f9acc49c0f7449f17eeddf21355e23dd011da899ec  overlays/bcm2712d0.dtbo" | sha256sum -c -
 ```
-
-On Ubuntu or Debian:
-
-```sh
-sudo apt install \
-  acpica-tools binutils-aarch64-linux-gnu build-essential \
-  device-tree-compiler gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-  python3 python3-pyelftools uuid-dev
-```
-
-On Arch Linux:
-
-```sh
-sudo pacman -S --needed \
-  aarch64-linux-gnu-binutils aarch64-linux-gnu-gcc \
-  aarch64-linux-gnu-glibc base-devel dtc git iasl python \
-  python-pyelftools
-```
-
-On macOS, install an `aarch64-elf-` GCC toolchain plus GNU Make, GNU sed, IASL,
-the device-tree compiler and Python with pyelftools. `build.sh` detects
-Homebrew's `gmake` and GNU sed automatically.
-
-Build a Release image:
-
-```sh
-./build.sh
-```
-
-Build a Debug image:
-
-```sh
-./build.sh --debug 1
-```
-
-The result is `RPI_EFI.fd`. Run `./build.sh --help` for the remaining options.
-
-## Experimental Windows fan candidate
-
-The `fan-persistent-windows-driver` development branch carries a modular UEFI
-patch and an experimental ARM64 KMDF driver for the official Raspberry Pi 5
-Active Cooler. The UEFI setup default is **Manual (Persistent), 100%**, so the
-fan remains at its fail-safe speed after Windows starts. When the test-signed
-driver is installed, Windows reads the SoC temperature and applies the selected
-curve automatically. Any temperature, mailbox, power, or unload failure requests
-100% fan.
-
-The firmware fan modules adapt work from Soulveig's Raspberry Pi 5 UEFI fan
-implementation. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and the
-retained license text in `LICENSES/`.
-
-This candidate has not been physically tested. Do not treat a successful build
-as proof that it boots or controls the fan, and do not make it a deployment
-wizard default until it passes a Raspberry Pi 5 hardware test. See
-[`WindowsDriver/Rpi5Fan/README.md`](WindowsDriver/Rpi5Fan/README.md) for the
-driver-specific safety and signing notes.
 
 ## Licenses
+Most files are licensed under the default EDK2 license, [BSD-2-Clause-Patent](https://github.com/tianocore/edk2/blob/master/License.txt).
 
-Most files use the EDK2
-[BSD-2-Clause-Patent license](https://github.com/tianocore/edk2/blob/master/License.txt).
-TF-A uses its
-[upstream license](https://github.com/ARM-software/arm-trusted-firmware/blob/master/docs/license.rst).
+For TF-A, see: <https://github.com/ARM-software/arm-trusted-firmware/blob/master/docs/license.rst>

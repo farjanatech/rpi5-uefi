@@ -6,5 +6,6 @@ __pycache__/
 tags/
 .vscode/
 *.fd
-WindowsDriver/**/bin/
-WindowsDriver/**/obj/
+
+# Firmware variable stores
+RPI_NV?.bin

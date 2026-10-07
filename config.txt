@@ -1,6 +1,10 @@
 armstub=RPI_EFI.fd
-device_tree_address=0x3e0000
-device_tree_end=0x400000
+device_tree_address=0x1f0000
+device_tree_end=0x210000
+
+# Linux GPU acceleration in Device Tree mode requires the matching kernel's
+# board DTB and overlays directory. See README.md before enabling:
+#dtoverlay=vc4-kms-v3d
 
 # Force 32 bpp framebuffer allocation.
 framebuffer_depth=32

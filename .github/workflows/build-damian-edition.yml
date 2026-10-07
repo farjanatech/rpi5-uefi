@@ -1,0 +1,48 @@
+name: Build Damian Edition
+
+on:
+  push:
+    branches:
+      - damian-edition
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            acpica-tools build-essential gcc-aarch64-linux-gnu g++ \
+            git python3-pyelftools uuid-dev device-tree-compiler
+
+      - name: Verify pinned Damian platform
+        run: |
+          test "$(git -C edk2-platforms rev-parse HEAD)" = "313a8915f8b8358ff5c5716668cccb59c11dd20d"
+          grep -Fq 'RPI0011' edk2-platforms/Platform/RaspberryPi/RPi5/ACPI-CONTRACT.md
+          ! grep -R -Fq '"RPI1060"' edk2-platforms/Platform/RaspberryPi/RPi5 || true
+
+      - name: Build Release
+        run: |
+          chmod +x build.sh tools/apply-damian-wifi.py
+          ./build.sh
+
+      - name: Validate output
+        run: |
+          test -s RPI_EFI.fd
+          sha256sum RPI_EFI.fd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RPi5-UEFI-damian-edition
+          path: |
+            RPI_EFI.fd
+            config.txt
+            DAMIAN_EDITION.md

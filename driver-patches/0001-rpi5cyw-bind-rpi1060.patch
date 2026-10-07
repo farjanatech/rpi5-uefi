@@ -1,0 +1,20 @@
+From: farjanatech damian-edition
+Subject: [PATCH] rpi5cyw: bind Damian-edition direct Wi-Fi node RPI1060
+
+Damian's ACPI contract already owns RPI0011 for the RP1 shared interrupt
+provider. The Damian-edition UEFI therefore exposes direct CYW43455 SDIO as
+ACPI\\RPI1060. Rebuild and re-sign the package after applying this patch.
+
+--- a/package/rpi5cyw.inf
++++ b/package/rpi5cyw.inf
+@@
+-%DeviceDesc% = Device_Install.ndi, ACPI\\RPI0011
++%DeviceDesc% = Device_Install.ndi, ACPI\\RPI1060
+--- a/installer/Install-RPi5-WiFi-Driver.ps1
++++ b/installer/Install-RPi5-WiFi-Driver.ps1
+@@
+-    $hardwarePattern = '^ACPI\\RPI0011(?:\\|$)'
++    $hardwarePattern = '^ACPI\\RPI1060(?:\\|$)'
+@@
+-            throw 'ACPI\RPI0011 was not found through PnP or CIM. Refusing to force-install the driver.'
++            throw 'ACPI\RPI1060 was not found through PnP or CIM. Refusing to force-install the driver.'
