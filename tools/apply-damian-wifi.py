@@ -6,10 +6,12 @@ Damian edk2-platforms tree.
 
 The transform is intentionally narrow:
   * preserves Damian's ACPI IDs and provider architecture;
-  * keeps Standard SD Bus as the default;
-  * adds ACPI\RPI1060 only for opt-in direct NDIS mode;
+  * keeps the existing Wi-Fi ownership switch;
+  * adds ACPI\RPI1060 only for direct NDIS mode;
   * configures SDIO2 only when direct mode is selected;
-  * does not touch fan, display, mailbox, RTC, NVRAM, RP1 IRQ or graph ABI.
+  * exposes Damian's already-detected BCM2712 silicon revision on RPI1001
+    as _HRV (0=C0/C1, 1=D0) without changing display resources;
+  * does not replace fan, display, mailbox, RTC, NVRAM, RP1 IRQ or graph ABI.
 """
 
 from __future__ import annotations
@@ -356,6 +358,21 @@ ApplyConfigTableVariables (
     }
 
     Include ("HardwareMetadata.asi")""",
+        ns.reverse,
+    )
+
+    bcm = r / "Platform/RaspberryPi/RPi5/AcpiTables/Bcm2712Peripherals.asi"
+    replace_one(
+        bcm,
+        """Device (DISP) {
+  Name (_HID, "RPI1001")
+  Name (_UID, 0)
+  Name (_DDN, "BCM2712 display engine and dual HDMI audio/video")""",
+        """Device (DISP) {
+  Name (_HID, "RPI1001")
+  Name (_UID, 0)
+  Name (_HRV, SREV) // 0 = C0/C1, 1 = D0
+  Name (_DDN, "BCM2712 display engine and dual HDMI audio/video")""",
         ns.reverse,
     )
 

@@ -53,6 +53,8 @@ require("RPI00F1" in rp1_peripherals,
         "Damian conditional fan compatible ID RPI00F1 was lost")
 require("RPI1000" in bcm and "RPI1001" in bcm,
         "Damian V3D/display nodes were lost")
+require('Name (_HRV, SREV) // 0 = C0/C1, 1 = D0' in bcm,
+        "RPI1001 must expose Damian's silicon revision via _HRV")
 require("RPI1012" in bcm and "RPI1013" in bcm and "RPI1011" in bcm,
         "Damian mailbox/PM/IOMMU nodes were lost")
 require("RPI1025" in platform and "RPI1040" in platform,

@@ -54,6 +54,7 @@ jobs:
           python3 tools/verify-damian-edition.py edk2-platforms
           git -C edk2-platforms diff --name-only | sort > /tmp/changed.txt
           printf '%s\n' \
+            'Platform/RaspberryPi/RPi5/AcpiTables/Bcm2712Peripherals.asi' \
             'Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl' \
             'Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/ConfigTable.c' \
             'Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/ConfigTable.h' \

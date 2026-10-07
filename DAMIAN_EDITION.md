@@ -63,3 +63,18 @@ the standard SDC1 SD-bus owner and exposes WFD0/RPI1060 over the same SDIO2 host
 The intended Windows profile is therefore:
 
 Damian driver package + Farjanatech RPI1060 Wi-Fi driver, concurrently.
+
+
+## BCM2712 C1 / D0 graphics revision ABI
+
+Damian already detects the BCM2712 pinctrl generation from the boot firmware
+device tree and patches `\_SB.SREV`:
+
+- `0` = C0/C1 register generation
+- `1` = D0 register generation
+- any other value = unknown / fail closed
+
+Damian Edition also exposes the same value as `_HRV` on `RPI1001` (DISP).
+This does not alter the display MMIO or IRQ resources. It gives the matching
+Windows graphics driver an explicit, firmware-authoritative way to select its
+C1 or D0 handoff parser while retaining one ACPI HID and one driver package.
