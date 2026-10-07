@@ -1,14 +1,7 @@
 name: Release Damian Edition RC1
 
 on:
-  push:
-    branches:
-      - damian-edition
-    paths:
-      - '.github/workflows/release-damian-edition.yml'
-      - 'release/**'
-      - 'tools/prepare-firmware.py'
-      - 'tools/verify-damian-edition.py'
+  workflow_dispatch:
 
 permissions:
   contents: write
