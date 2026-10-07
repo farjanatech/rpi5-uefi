@@ -67,7 +67,7 @@ typedef struct {
 """,
         """#define ACPI_SD_COMPAT_MODE_DEFAULT    ACPI_SD_COMPAT_MODE_BRCMSTB_BAYTRAIL
 #define ACPI_SD_LIMIT_UHS_DEFAULT      TRUE
-#define ACPI_WIFI_MODE_DEFAULT         ACPI_WIFI_MODE_STANDARD
+#define ACPI_WIFI_MODE_DEFAULT         ACPI_WIFI_MODE_DIRECT_NDIS
 """,
         ns.reverse,
     )

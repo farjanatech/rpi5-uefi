@@ -23,9 +23,13 @@ and consumes the first interrupt resource. Damian SDC1 already describes the
 same SDIO2 host base and IRQ 306. WFD0 deliberately mirrors that _CRS while SDC1
 is hidden, so ownership is exclusive.
 
+## Windows all-drivers mode (default)
+
+Direct NDIS mode is the default for this branch so the complete Damian Windows driver set and Farjanatech Wi-Fi can operate in the same boot. Only SDC1 ownership changes; Damian's other ACPI nodes remain enabled.
+
 ## Standard mode
 
-Standard mode is the default. No direct-SDIO register programming is performed
+Standard mode is the recovery/compatibility fallback. No direct-SDIO register programming is performed
 and Damian's original SDC1/WLAN namespace remains visible.
 
 ## Direct mode
@@ -43,3 +47,19 @@ Direct mode:
 
 No fan, display, mailbox, RTC, NVRAM, RP1 IRQ, GPIO, graph, PCIe or other
 Damian ACPI ABI is changed.
+
+
+## Coexistence with Damian drivers
+
+Direct NDIS mode does not disable any Damian source-driver package. It hides only
+the standard SDC1 SD-bus owner and exposes WFD0/RPI1060 over the same SDIO2 host.
+
+- Pi5Board.sys / RPI1025 remains active and holds the Wi-Fi enable signal in its
+  operating state; it does not implement Wi-Fi networking.
+- Pi5Bluetooth.sys / RPI1017 remains active over its H4 UART transport.
+- RP1 IRQ service / RPI0011 remains untouched and cannot be matched by Wi-Fi.
+- Graphics, fan, mailbox, RTC, GPIO, DMA, clocks, NVRAM and RPIGRAPH are unchanged.
+
+The intended Windows profile is therefore:
+
+Damian driver package + Farjanatech RPI1060 Wi-Fi driver, concurrently.

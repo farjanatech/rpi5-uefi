@@ -18,3 +18,20 @@ ACPI\\RPI1060. Rebuild and re-sign the package after applying this patch.
 @@
 -            throw 'ACPI\RPI0011 was not found through PnP or CIM. Refusing to force-install the driver.'
 +            throw 'ACPI\RPI1060 was not found through PnP or CIM. Refusing to force-install the driver.'
+
+--- a/utility/Check-RPi5-WiFi-Readiness.ps1
++++ b/utility/Check-RPi5-WiFi-Readiness.ps1
+@@
+-        -not @(Get-CimInstance Win32_PnPEntity | Where-Object PNPDeviceID -like 'ACPI\RPI0011\*').Count) {
++        -not @(Get-CimInstance Win32_PnPEntity | Where-Object PNPDeviceID -like 'ACPI\RPI1060\*').Count) {
+--- a/diagnostics/Collect-RPi5-WiFi-Diagnostics.ps1
++++ b/diagnostics/Collect-RPi5-WiFi-Diagnostics.ps1
+@@
+-    $setupMatches = Select-String -LiteralPath $Path -Pattern 'RPI0011|rpi5cyw|CYW43455|Direct SDIO' -Context 10,18 -ErrorAction SilentlyContinue
++    $setupMatches = Select-String -LiteralPath $Path -Pattern 'RPI1060|rpi5cyw|CYW43455|Direct SDIO' -Context 10,18 -ErrorAction SilentlyContinue
+@@
+-        $targetDevice = Get-Rpi5DeviceByAcpiId -AcpiId 'RPI0011'
++        $targetDevice = Get-Rpi5DeviceByAcpiId -AcpiId 'RPI1060'
+@@
+-ExpectedACPI=ACPI\RPI0011
++ExpectedACPI=ACPI\RPI1060

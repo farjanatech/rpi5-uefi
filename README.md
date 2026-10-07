@@ -12,8 +12,9 @@ Pinned baseline:
   are not replaced by Farjanatech equivalents.
 
 The only extension is an optional **Windows Direct NDIS** mode for the on-board
-CYW43455 Wi-Fi controller. The default remains Damian's original **Standard SD Bus**
-mode.
+CYW43455 Wi-Fi controller. The default is **Windows Direct NDIS** so Damian's complete Windows driver set
+and the Farjanatech CYW43455 driver can run together in the same Windows boot.
+**Standard SD Bus** remains available only as a compatibility/recovery fallback.
 
 ## Direct Wi-Fi design
 
@@ -38,8 +39,8 @@ The configuration is available under:
 
 Options:
 
-- **Standard SD Bus (Damian)** — default, original Damian behavior.
-- **Windows Direct NDIS (Farjanatech)** — exposes `ACPI\\RPI1060`.
+- **Windows Direct NDIS (Farjanatech)** — **default**; exposes `ACPI\\RPI1060` while all Damian driver nodes remain active.
+- **Standard SD Bus (Damian)** — fallback; restores Damian's original SDC1/sdbus ownership.
 
 ## Companion driver
 
