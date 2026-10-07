@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause-Patent
-"""
+r"""
 Apply the Damian-edition CYW43455 direct-SDIO compatibility layer to the pinned
 Damian edk2-platforms tree.
 

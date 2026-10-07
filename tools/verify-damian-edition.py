@@ -41,7 +41,7 @@ require("Device (SDC1)" in dsdt and 'Name (_HID, "BRCM5D12")' in dsdt,
         "Damian standard SDC1 fallback was not retained")
 require(dsdt.count("WIFM == ACPI_WIFI_MODE_DIRECT_NDIS") >= 2,
         "SDC1/WFD0 mutual exclusion is missing")
-require("MAX_50MHZ_MODE" not in periph,
+require("SDIO2_CFG_MAX_50MHZ_MODE" not in periph,
         "Direct path must not reintroduce the old MAX_50MHZ_MODE override")
 require("InitWifiDirectSdioHost" in periph and "SDIO2_CFG_CQ_CAPABILITY" in periph,
         "Direct SDIO host preparation is missing")
