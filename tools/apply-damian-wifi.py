@@ -9,8 +9,7 @@ The transform is intentionally narrow:
   * keeps the existing Wi-Fi ownership switch;
   * adds ACPI\RPI1060 only for direct NDIS mode;
   * configures SDIO2 only when direct mode is selected;
-  * exposes Damian's already-detected BCM2712 silicon revision on RPI1001
-    as _HRV (0=C0/C1, 1=D0) without changing display resources;
+  * preserves Damian's existing RPI1001 _HRV metadata (0=C0/C1, 1=D0);
   * does not replace fan, display, mailbox, RTC, NVRAM, RP1 IRQ or graph ABI.
 """
 
@@ -358,21 +357,6 @@ ApplyConfigTableVariables (
     }
 
     Include ("HardwareMetadata.asi")""",
-        ns.reverse,
-    )
-
-    bcm = r / "Platform/RaspberryPi/RPi5/AcpiTables/Bcm2712Peripherals.asi"
-    replace_one(
-        bcm,
-        """Device (DISP) {
-  Name (_HID, "RPI1001")
-  Name (_UID, 0)
-  Name (_DDN, "BCM2712 display engine and dual HDMI audio/video")""",
-        """Device (DISP) {
-  Name (_HID, "RPI1001")
-  Name (_UID, 0)
-  Method (_HRV, 0, NotSerialized) { Return (SREV) } // 0 = C0/C1, 1 = D0
-  Name (_DDN, "BCM2712 display engine and dual HDMI audio/video")""",
         ns.reverse,
     )
 
