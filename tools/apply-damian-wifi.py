@@ -371,7 +371,7 @@ ApplyConfigTableVariables (
         """Device (DISP) {
   Name (_HID, "RPI1001")
   Name (_UID, 0)
-  Name (_HRV, SREV) // 0 = C0/C1, 1 = D0
+  Method (_HRV, 0, NotSerialized) { Return (SREV) } // 0 = C0/C1, 1 = D0
   Name (_DDN, "BCM2712 display engine and dual HDMI audio/video")""",
         ns.reverse,
     )
