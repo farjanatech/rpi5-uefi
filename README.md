@@ -16,6 +16,16 @@ CYW43455 Wi-Fi controller. The default is **Windows Direct NDIS** so Damian's co
 and the Farjanatech CYW43455 driver can run together in the same Windows boot.
 **Standard SD Bus** remains available only as a compatibility/recovery fallback.
 
+## Release candidate
+
+A boot-ready prerelease is published as **Damian Edition v0.1.0-rc1**. It is
+built with Damian-compatible file-backed NVRAM, pinned Raspberry Pi boot DTB /
+D0 overlay, checksum files, and installation notes.
+
+The firmware side exposes `ACPI\\RPI1060` for the future matching Farjanatech
+Wi-Fi driver. The current public Wi-Fi 0.7.1.20 package still binds
+`ACPI\\RPI0011` and must not be installed unchanged.
+
 ## Direct Wi-Fi design
 
 The direct mode uses a new, collision-free ACPI hardware ID:

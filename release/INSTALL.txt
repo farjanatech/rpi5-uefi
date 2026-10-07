@@ -1,0 +1,69 @@
+Raspberry Pi 5 UEFI — Damian Edition v0.1.0-rc1
+======================================================
+
+PURPOSE
+-------
+This package keeps Damian's Raspberry Pi 5 UEFI / Windows-driver ACPI contract
+and adds a separate ACPI\RPI1060 direct-SDIO node for the Farjanatech
+CYW43455 Wi-Fi driver.
+
+This is a RELEASE CANDIDATE. The firmware is CI/source validated, but the
+combined system has not yet been physically validated here with every Damian
+driver plus the future RPI1060 Wi-Fi driver on the same board.
+
+INSTALL
+-------
+1. Prepare the first boot partition as FAT32.
+2. Extract the CONTENTS of this ZIP to the root of that FAT32 partition.
+3. Keep the included filenames unchanged:
+     RPI_EFI.fd
+     config.txt
+     RPI_NV0.bin
+     RPI_NV1.bin
+     bcm2712-rpi-5-b.dtb
+     overlays\bcm2712d0.dtbo
+4. Boot the Pi. ACPI mode is Damian's default.
+5. Damian-edition Wi-Fi defaults to:
+     Windows Direct NDIS (Farjanatech)
+   Standard SD Bus (Damian) remains available as a recovery/fallback option.
+
+UPDATING AN EXISTING DAMIAN-EDITION INSTALLATION
+------------------------------------------------
+The two RPI_NV*.bin files contain persistent UEFI settings.
+
+For a clean installation, use the fresh pair from this ZIP.
+For an update where you want to keep existing settings, back up your current
+RPI_NV0.bin and RPI_NV1.bin and do NOT overwrite them as an unmatched pair.
+
+WINDOWS DRIVERS
+---------------
+Damian drivers:
+  Use Damian's matching 0.1a Windows ARM64 driver set. The firmware-side IDs,
+  providers, display, fan, mailbox, board, GPIO, RP1 services and graph contract
+  are preserved by this edition.
+
+Farjanatech Wi-Fi:
+  NOT READY IN THE CURRENT PUBLIC DRIVER PACKAGE YET.
+  The current Farjanatech Wi-Fi 0.7.1.20 INF binds ACPI\RPI0011, which is
+  Damian's RP1 interrupt provider. Do not install that INF unchanged with this
+  firmware. The future Damian-edition Wi-Fi build must bind ACPI\RPI1060.
+  Firmware support for RPI1060 is already present in this package.
+
+FAN SAFETY
+----------
+Damian's fan implementation is retained. Firmware positively detects the fan,
+runs it at full speed during UEFI and carries that state across
+ExitBootServices. Pi5Fan.sys starts at full speed and has watchdog fail-safe
+behavior for missing/stale temperature, fan stall and high temperature.
+
+SECURE BOOT
+-----------
+This release candidate follows Damian 0.1a release behavior: Secure Boot support
+is not enabled in this build.
+
+SOURCE BASE
+-----------
+farjanatech/rpi5-uefi branch: damian-edition
+Damian rpi5-uefi base: 21c5034031a44595fbc008c38698889fe070a409
+Damian edk2-platforms: 313a8915f8b8358ff5c5716668cccb59c11dd20d
+Damian Windows drivers reference: af8e98982ce31afaa6802e0c870f264d1790caf0

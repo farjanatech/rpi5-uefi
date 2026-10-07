@@ -1,0 +1,148 @@
+name: Release Damian Edition RC1
+
+on:
+  push:
+    branches:
+      - damian-edition
+    paths:
+      - '.github/workflows/release-damian-edition.yml'
+      - 'release/**'
+      - 'tools/prepare-firmware.py'
+      - 'tools/verify-damian-edition.py'
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: damian-edition-v0.1.0-rc1
+  RELEASE_ZIP: RPi5-UEFI-Damian-Edition-v0.1.0-rc1.zip
+  DTB_COMMIT: 1e403e23baab5673f0494a200f57cd01287d5b1a
+  D0_OVERLAY_COMMIT: bead686816848038563a542dc854346ab13253a2
+  DTB_SHA256: c5432acc8373fa6311e147221b8ba5c8685b957730afac7592c5deac2b27e732
+  D0_OVERLAY_SHA256: b73210c9256ff4b4963365f9acc49c0f7449f17eeddf21355e23dd011da899ec
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            acpica-tools build-essential gcc-aarch64-linux-gnu g++ \
+            git python3-pyelftools uuid-dev device-tree-compiler curl zip
+
+      - name: Verify exact Damian pins
+        run: |
+          set -euxo pipefail
+          test "$(git -C arm-trusted-firmware rev-parse HEAD)" = "d2a8287d34fa4571e6e68204f903ac8c2a43ed5d"
+          test "$(git -C edk2 rev-parse HEAD)" = "27c25ae159ddd131ae435315e6d59ba9c6e8e049"
+          test "$(git -C edk2-platforms rev-parse HEAD)" = "313a8915f8b8358ff5c5716668cccb59c11dd20d"
+          test "$(git -C edk2-non-osi rev-parse HEAD)" = "7ac12d81e02b323bffdf1ef3c188ea33c2185c91"
+
+      - name: Verify Wi-Fi transform is narrow and ABI-safe
+        run: |
+          set -euxo pipefail
+          chmod +x tools/apply-damian-wifi.py tools/verify-damian-edition.py
+          python3 tools/apply-damian-wifi.py edk2-platforms
+          python3 tools/verify-damian-edition.py edk2-platforms
+          git -C edk2-platforms diff --name-only | sort > /tmp/changed.txt
+          printf '%s\n' \
+            'Platform/RaspberryPi/RPi5/AcpiTables/Dsdt.asl' \
+            'Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/ConfigTable.c' \
+            'Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/ConfigTable.h' \
+            'Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/Peripherals.c' \
+            'Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.uni' \
+            'Platform/RaspberryPi/RPi5/Drivers/RpiPlatformDxe/RpiPlatformDxeHii.vfr' \
+            'Platform/RaspberryPi/RPi5/Include/RpiPlatformVarStoreData.h' | sort > /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          python3 tools/apply-damian-wifi.py edk2-platforms --reverse
+          git -C edk2-platforms diff --exit-code
+
+      - name: Build firmware with Damian file-backed NVRAM
+        run: |
+          set -euxo pipefail
+          chmod +x build.sh tools/apply-damian-wifi.py tools/prepare-firmware.py
+          ./build.sh --edk2-flags "-D FILE_NVRAM=TRUE"
+
+      - name: Validate firmware image
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("RPI_EFI.fd").read_bytes()
+          assert len(p) == 0x1f0000, hex(len(p))
+          assert p[0x1d0028:0x1d002c] == b"_FVH"
+          print("RPI_EFI.fd layout OK:", len(p), "bytes")
+          PY
+          sha256sum RPI_EFI.fd
+
+      - name: Assemble bootable release tree
+        run: |
+          set -euxo pipefail
+          rm -rf Build/damian-edition-release
+          python3 tools/prepare-firmware.py RPI_EFI.fd config.txt Build/damian-edition-release --file-nvram 1
+          mkdir -p Build/damian-edition-release/overlays Build/damian-edition-release/licenses
+          curl -fL "https://raw.githubusercontent.com/raspberrypi/firmware/$DTB_COMMIT/boot/bcm2712-rpi-5-b.dtb" -o Build/damian-edition-release/bcm2712-rpi-5-b.dtb
+          curl -fL "https://raw.githubusercontent.com/raspberrypi/firmware/$D0_OVERLAY_COMMIT/boot/overlays/bcm2712d0.dtbo" -o Build/damian-edition-release/overlays/bcm2712d0.dtbo
+          echo "$DTB_SHA256  Build/damian-edition-release/bcm2712-rpi-5-b.dtb" | sha256sum -c -
+          echo "$D0_OVERLAY_SHA256  Build/damian-edition-release/overlays/bcm2712d0.dtbo" | sha256sum -c -
+          cp release/INSTALL.txt Build/damian-edition-release/
+          cp release/THIRD_PARTY_NOTICES.txt Build/damian-edition-release/
+          cp DAMIAN_EDITION.md Build/damian-edition-release/
+          cp edk2/License.txt Build/damian-edition-release/licenses/EDK2-License.txt
+          cp arm-trusted-firmware/docs/license.rst Build/damian-edition-release/licenses/TF-A-License.rst
+          printf '%s\n' \
+            'Damian Edition v0.1.0-rc1' \
+            "Source commit: $GITHUB_SHA" \
+            'Damian edk2-platforms: 313a8915f8b8358ff5c5716668cccb59c11dd20d' \
+            'Wi-Fi firmware ABI: ACPI\RPI1060' \
+            > Build/damian-edition-release/VERSION.txt
+
+      - name: Validate NVRAM pair and package contract
+        run: |
+          set -euxo pipefail
+          python3 tools/prepare-firmware.py RPI_EFI.fd config.txt Build/damian-edition-release --file-nvram 1
+          test "$(stat -c%s Build/damian-edition-release/RPI_NV0.bin)" -eq 135168
+          test "$(stat -c%s Build/damian-edition-release/RPI_NV1.bin)" -eq 135168
+          test "$(grep -c '^initramfs RPI_NV0.bin,RPI_NV1.bin 0x04000000$' Build/damian-edition-release/config.txt)" -eq 1
+          test -s Build/damian-edition-release/RPI_EFI.fd
+          test -s Build/damian-edition-release/bcm2712-rpi-5-b.dtb
+          test -s Build/damian-edition-release/overlays/bcm2712d0.dtbo
+          (cd Build/damian-edition-release && sha256sum RPI_EFI.fd config.txt RPI_NV0.bin RPI_NV1.bin bcm2712-rpi-5-b.dtb overlays/bcm2712d0.dtbo > SHA256SUMS.txt)
+
+      - name: Create release ZIP
+        run: |
+          set -euxo pipefail
+          (cd Build/damian-edition-release && zip -9 -r "../$RELEASE_ZIP" .)
+          cd Build
+          sha256sum "$RELEASE_ZIP" > "$RELEASE_ZIP.sha256"
+          unzip -t "$RELEASE_ZIP"
+          unzip -l "$RELEASE_ZIP"
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RPi5-UEFI-Damian-Edition-v0.1.0-rc1
+          path: |
+            Build/RPi5-UEFI-Damian-Edition-v0.1.0-rc1.zip
+            Build/RPi5-UEFI-Damian-Edition-v0.1.0-rc1.zip.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "Raspberry Pi 5 UEFI Damian Edition v0.1.0-rc1" --notes-file release/RELEASE_NOTES.md --prerelease
+            gh release upload "$RELEASE_TAG" "Build/$RELEASE_ZIP" "Build/$RELEASE_ZIP.sha256" --clobber
+          else
+            gh release create "$RELEASE_TAG" "Build/$RELEASE_ZIP" "Build/$RELEASE_ZIP.sha256" --target "$GITHUB_SHA" --title "Raspberry Pi 5 UEFI Damian Edition v0.1.0-rc1" --notes-file release/RELEASE_NOTES.md --prerelease
+          fi

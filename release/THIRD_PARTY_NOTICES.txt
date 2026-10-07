@@ -1,0 +1,16 @@
+Damian Edition third-party/source notices
+==========================================
+
+Firmware base:
+- damian5466/rpi5-uefi @ 21c5034031a44595fbc008c38698889fe070a409
+- damian5466/edk2-platforms @ 313a8915f8b8358ff5c5716668cccb59c11dd20d
+- damian5466/edk2 @ 27c25ae159ddd131ae435315e6d59ba9c6e8e049
+- ARM Trusted Firmware @ d2a8287d34fa4571e6e68204f903ac8c2a43ed5d
+- tianocore/edk2-non-osi @ 7ac12d81e02b323bffdf1ef3c188ea33c2185c91
+
+NVRAM packaging helper:
+- damian5466/rpi5-windows-drivers
+  pi5-nvram/prepare-firmware.py
+  @ af8e98982ce31afaa6802e0c870f264d1790caf0
+
+See the source repositories and the license files included in this archive.
